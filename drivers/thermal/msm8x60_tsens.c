@@ -1,4 +1,5 @@
 /* Copyright (c) 2011-2012, Code Aurora Forum. All rights reserved.
+ * All Rights Reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -6,7 +7,7 @@
  *
  * This program is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
  *
  */
@@ -37,98 +38,98 @@ enum tsens_trip_type {
 };
 
 /* MSM8960 TSENS register info */
-#define TSENS_CAL_DEGC 30
-#define TSENS_MAIN_SENSOR 0
+#define TSENS_CAL_DEGC					30
+#define TSENS_MAIN_SENSOR				0
 
-#define TSENS_8960_QFPROM_ADDR0 (MSM_QFPROM_BASE + 0x000000bc)
-#define TSENS_8960_QFPROM_SPARE_ADDR0 (MSM_QFPROM_BASE + 0x00000414)
-#define TSENS_8960_CONFIG 0x9b
-#define TSENS_8960_CONFIG_SHIFT 28
-#define TSENS_8960_CONFIG_MASK (3 << TSENS_8960_CONFIG_SHIFT)
-#define TSENS_CNTL_ADDR (MSM_CLK_CTL_BASE + 0x00003620)
-#define TSENS_EN BIT(0)
-#define TSENS_SW_RST BIT(1)
-#define TSENS_ADC_CLK_SEL BIT(2)
-#define SENSOR0_EN BIT(3)
-#define SENSOR1_EN BIT(4)
-#define SENSOR2_EN BIT(5)
-#define SENSOR3_EN BIT(6)
-#define SENSOR4_EN BIT(7)
-#define SENSORS_EN (SENSOR0_EN | SENSOR1_EN | \
-SENSOR2_EN | SENSOR3_EN | SENSOR4_EN)
-#define TSENS_MIN_STATUS_MASK BIT(8)
-#define TSENS_LOWER_STATUS_CLR BIT(9)
-#define TSENS_UPPER_STATUS_CLR BIT(10)
-#define TSENS_MAX_STATUS_MASK BIT(11)
-#define TSENS_MEASURE_PERIOD 4 /* 1 sec. default */
-#define TSENS_8960_SLP_CLK_ENA BIT(24)
+#define TSENS_8960_QFPROM_ADDR0		(MSM_QFPROM_BASE + 0x000000bc)
+#define TSENS_8960_QFPROM_SPARE_ADDR0	(MSM_QFPROM_BASE + 0x00000414)
+#define TSENS_8960_CONFIG				0x9b
+#define TSENS_8960_CONFIG_SHIFT				28
+#define TSENS_8960_CONFIG_MASK		(3 << TSENS_8960_CONFIG_SHIFT)
+#define TSENS_CNTL_ADDR			(MSM_CLK_CTL_BASE + 0x00003620)
+#define TSENS_EN					BIT(0)
+#define TSENS_SW_RST					BIT(1)
+#define TSENS_ADC_CLK_SEL				BIT(2)
+#define SENSOR0_EN					BIT(3)
+#define SENSOR1_EN					BIT(4)
+#define SENSOR2_EN					BIT(5)
+#define SENSOR3_EN					BIT(6)
+#define SENSOR4_EN					BIT(7)
+#define SENSORS_EN			(SENSOR0_EN | SENSOR1_EN |	\
+					SENSOR2_EN | SENSOR3_EN | SENSOR4_EN)
+#define TSENS_MIN_STATUS_MASK				BIT(8)
+#define TSENS_LOWER_STATUS_CLR				BIT(9)
+#define TSENS_UPPER_STATUS_CLR				BIT(10)
+#define TSENS_MAX_STATUS_MASK				BIT(11)
+#define TSENS_MEASURE_PERIOD				4 /* 1 sec. default */
+#define TSENS_8960_SLP_CLK_ENA				BIT(24)
 
-#define TSENS_THRESHOLD_ADDR (MSM_CLK_CTL_BASE + 0x00003624)
-#define TSENS_THRESHOLD_MAX_CODE 0xff
-#define TSENS_THRESHOLD_MIN_CODE 0
-#define TSENS_THRESHOLD_MAX_LIMIT_SHIFT 24
-#define TSENS_THRESHOLD_MIN_LIMIT_SHIFT 16
-#define TSENS_THRESHOLD_UPPER_LIMIT_SHIFT 8
-#define TSENS_THRESHOLD_LOWER_LIMIT_SHIFT 0
-#define TSENS_THRESHOLD_MAX_LIMIT_MASK (TSENS_THRESHOLD_MAX_CODE << \
-TSENS_THRESHOLD_MAX_LIMIT_SHIFT)
-#define TSENS_THRESHOLD_MIN_LIMIT_MASK (TSENS_THRESHOLD_MAX_CODE << \
-TSENS_THRESHOLD_MIN_LIMIT_SHIFT)
-#define TSENS_THRESHOLD_UPPER_LIMIT_MASK (TSENS_THRESHOLD_MAX_CODE << \
-TSENS_THRESHOLD_UPPER_LIMIT_SHIFT)
-#define TSENS_THRESHOLD_LOWER_LIMIT_MASK (TSENS_THRESHOLD_MAX_CODE << \
-TSENS_THRESHOLD_LOWER_LIMIT_SHIFT)
+#define TSENS_THRESHOLD_ADDR		(MSM_CLK_CTL_BASE + 0x00003624)
+#define TSENS_THRESHOLD_MAX_CODE			0xff
+#define TSENS_THRESHOLD_MIN_CODE			0
+#define TSENS_THRESHOLD_MAX_LIMIT_SHIFT			24
+#define TSENS_THRESHOLD_MIN_LIMIT_SHIFT			16
+#define TSENS_THRESHOLD_UPPER_LIMIT_SHIFT		8
+#define TSENS_THRESHOLD_LOWER_LIMIT_SHIFT		0
+#define TSENS_THRESHOLD_MAX_LIMIT_MASK		(TSENS_THRESHOLD_MAX_CODE << \
+					TSENS_THRESHOLD_MAX_LIMIT_SHIFT)
+#define TSENS_THRESHOLD_MIN_LIMIT_MASK		(TSENS_THRESHOLD_MAX_CODE << \
+					TSENS_THRESHOLD_MIN_LIMIT_SHIFT)
+#define TSENS_THRESHOLD_UPPER_LIMIT_MASK	(TSENS_THRESHOLD_MAX_CODE << \
+					TSENS_THRESHOLD_UPPER_LIMIT_SHIFT)
+#define TSENS_THRESHOLD_LOWER_LIMIT_MASK	(TSENS_THRESHOLD_MAX_CODE << \
+					TSENS_THRESHOLD_LOWER_LIMIT_SHIFT)
 /* Initial temperature threshold values */
-#define TSENS_LOWER_LIMIT_TH 0x50
-#define TSENS_UPPER_LIMIT_TH 0xdf
-#define TSENS_MIN_LIMIT_TH 0x38
-#define TSENS_MAX_LIMIT_TH 0xff
+#define TSENS_LOWER_LIMIT_TH				0x50
+#define TSENS_UPPER_LIMIT_TH				0xdf
+#define TSENS_MIN_LIMIT_TH				0x38
+#define TSENS_MAX_LIMIT_TH				0xff
 
-#define TSENS_S0_STATUS_ADDR (MSM_CLK_CTL_BASE + 0x00003628)
-#define TSENS_STATUS_ADDR_OFFSET 2
-#define TSENS_INT_STATUS_ADDR (MSM_CLK_CTL_BASE + 0x0000363c)
+#define TSENS_S0_STATUS_ADDR			(MSM_CLK_CTL_BASE + 0x00003628)
+#define TSENS_STATUS_ADDR_OFFSET			2
+#define TSENS_INT_STATUS_ADDR			(MSM_CLK_CTL_BASE + 0x0000363c)
 
-#define TSENS_LOWER_INT_MASK BIT(1)
-#define TSENS_UPPER_INT_MASK BIT(2)
-#define TSENS_MAX_INT_MASK BIT(3)
-#define TSENS_TRDY_MASK BIT(7)
+#define TSENS_LOWER_INT_MASK				BIT(1)
+#define TSENS_UPPER_INT_MASK				BIT(2)
+#define TSENS_MAX_INT_MASK				BIT(3)
+#define TSENS_TRDY_MASK					BIT(7)
 
-#define TSENS_8960_CONFIG_ADDR (MSM_CLK_CTL_BASE + 0x00003640)
-#define TSENS_TRDY_RDY_MIN_TIME 1000
-#define TSENS_TRDY_RDY_MAX_TIME 1100
-#define TSENS_SENSOR_SHIFT 16
-#define TSENS_RED_SHIFT 8
-#define TSENS_8960_QFPROM_SHIFT 4
-#define TSENS_SENSOR_QFPROM_SHIFT 2
-#define TSENS_SENSOR0_SHIFT 3
-#define TSENS_MASK1 1
+#define TSENS_8960_CONFIG_ADDR			(MSM_CLK_CTL_BASE + 0x00003640)
+#define TSENS_TRDY_RDY_MIN_TIME				1000
+#define TSENS_TRDY_RDY_MAX_TIME				1100
+#define TSENS_SENSOR_SHIFT				16
+#define TSENS_RED_SHIFT					8
+#define TSENS_8960_QFPROM_SHIFT				4
+#define TSENS_SENSOR_QFPROM_SHIFT			2
+#define TSENS_SENSOR0_SHIFT				3
+#define TSENS_MASK1					1
 
-#define TSENS_8660_QFPROM_ADDR (MSM_QFPROM_BASE + 0x000000bc)
-#define TSENS_8660_QFPROM_RED_TEMP_SENSOR0_SHIFT 24
-#define TSENS_8660_QFPROM_TEMP_SENSOR0_SHIFT 16
-#define TSENS_8660_QFPROM_TEMP_SENSOR0_MASK (255 \
-<< TSENS_8660_QFPROM_TEMP_SENSOR0_SHIFT)
-#define TSENS_8660_CONFIG 01
-#define TSENS_8660_CONFIG_SHIFT 28
-#define TSENS_8660_CONFIG_MASK (3 << TSENS_8660_CONFIG_SHIFT)
-#define TSENS_8660_SLP_CLK_ENA BIT(24)
+#define TSENS_8660_QFPROM_ADDR			(MSM_QFPROM_BASE + 0x000000bc)
+#define TSENS_8660_QFPROM_RED_TEMP_SENSOR0_SHIFT	24
+#define TSENS_8660_QFPROM_TEMP_SENSOR0_SHIFT		16
+#define TSENS_8660_QFPROM_TEMP_SENSOR0_MASK		(255		\
+					<< TSENS_8660_QFPROM_TEMP_SENSOR0_SHIFT)
+#define TSENS_8660_CONFIG				01
+#define TSENS_8660_CONFIG_SHIFT				28
+#define TSENS_8660_CONFIG_MASK			(3 << TSENS_8660_CONFIG_SHIFT)
+#define TSENS_8660_SLP_CLK_ENA				BIT(24)
 
 struct tsens_tm_device_sensor {
 	struct thermal_zone_device	*tz_dev;
 	enum thermal_device_mode	mode;
-	unsigned int	sensor_num;
-	struct work_struct	work;
-	int	offset;
-	int	calib_data;
-	int	calib_data_backup;
+	unsigned int			sensor_num;
+	struct work_struct		work;
+	int				offset;
+	int				calib_data;
+	int				calib_data_backup;
 };
 
 struct tsens_tm_device {
-	bool	prev_reading_avail;
-	int	slope_mul_tsens_factor;
-	int	tsens_factor;
-	uint32_t	tsens_num_sensor;
-	enum platform_type	hw_type;
+	bool				prev_reading_avail;
+	int				slope_mul_tsens_factor;
+	int				tsens_factor;
+	uint32_t			tsens_num_sensor;
+	enum platform_type		hw_type;
 	struct tsens_tm_device_sensor	sensor[0];
 };
 
@@ -147,7 +148,7 @@ static int tsens_tz_code_to_degC(int adc_code, int sensor_num)
 	else if (degcbeforefactor > 0)
 		degC = (degcbeforefactor + tmdev->tsens_factor/2)
 						/ tmdev->tsens_factor;
-	else /* rounding for negative degrees */
+	else  /* rounding for negative degrees */
 		degC = (degcbeforefactor - tmdev->tsens_factor/2)
 						/ tmdev->tsens_factor;
 	return degC;
@@ -177,14 +178,14 @@ static void tsens8x60_get_temp(int sensor_num, unsigned long *temp)
 			usleep_range(TSENS_TRDY_RDY_MIN_TIME,
 				TSENS_TRDY_RDY_MAX_TIME);
 		tmdev->prev_reading_avail = true;
-}
+	}
 
 	code = readl_relaxed(TSENS_S0_STATUS_ADDR +
 			(sensor_num << TSENS_STATUS_ADDR_OFFSET));
 	*temp = tsens_tz_code_to_degC(code, sensor_num);
 	tsens_log_count++;
 	if ((tsens_log_count % 20) == 0) {
-		pr_warn("TSENS: Current CPU Temperature is: %lu\n", *temp);
+		pr_warn("[AnthraX-TSENS]: Current CPU Temperature is (C): %lu\n", *temp);
 		tsens_log_count = 0;
 	}
 }
@@ -195,7 +196,7 @@ static int tsens_tz_get_temp(struct thermal_zone_device *thermal,
 	struct tsens_tm_device_sensor *tm_sensor = thermal->devdata;
 
 	if (!tm_sensor || tm_sensor->mode != THERMAL_DEVICE_ENABLED || !temp) {
-		pr_err("TSENS: TZ get temp failed!\n");
+		pr_err("[AnthraX-TSENS]: TZ get temp failed!\n");
 		return -EINVAL;
 	}
 
@@ -207,9 +208,9 @@ static int tsens_tz_get_temp(struct thermal_zone_device *thermal,
 int tsens_get_temp(struct tsens_device *device, unsigned long *temp)
 {
 	if (!tmdev) {
-		pr_err("TSENS: get temp failed!\n");
+		pr_err("[AnthraX-TSENS]: get temp failed!\n");
 		return -ENODEV;
-}
+	}
 
 	tsens8x60_get_temp(device->sensor_num, temp);
 
@@ -247,7 +248,7 @@ static int tsens_tz_set_mode(struct thermal_zone_device *thermal,
 
 	if (mode != tm_sensor->mode) {
 		pr_info("%s: mode: %d --> %d\n", __func__, tm_sensor->mode,
-									mode);
+									 mode);
 
 		reg = readl_relaxed(TSENS_CNTL_ADDR);
 
@@ -271,12 +272,12 @@ static int tsens_tz_set_mode(struct thermal_zone_device *thermal,
 			if (!(reg & SENSOR0_EN)) {
 				if (tmdev->hw_type == MSM_8960 ||
 						tmdev->hw_type == MSM_9615)
-						    reg &= ~(SENSORS_EN |
-							   TSENS_8960_SLP_CLK_ENA |
-							   TSENS_EN);
+					reg &= ~(SENSORS_EN |
+						TSENS_8960_SLP_CLK_ENA |
+						TSENS_EN);
 				else
 					reg &= ~(SENSORS_EN |
-					        TSENS_8660_SLP_CLK_ENA |
+						TSENS_8660_SLP_CLK_ENA |
 						TSENS_EN);
 
 				for (i = 1; i < tmdev->tsens_num_sensor; i++)
@@ -339,45 +340,45 @@ static int tsens_tz_activate_trip_type(struct thermal_zone_device *thermal,
 					>> TSENS_THRESHOLD_MAX_LIMIT_SHIFT;
 		mask = TSENS_MAX_STATUS_MASK;
 
-	if (!(reg_cntl & TSENS_UPPER_STATUS_CLR))
-		lo_code = (reg_th & TSENS_THRESHOLD_UPPER_LIMIT_MASK)
-				>> TSENS_THRESHOLD_UPPER_LIMIT_SHIFT;
-	else if (!(reg_cntl & TSENS_LOWER_STATUS_CLR))
-		lo_code = (reg_th & TSENS_THRESHOLD_LOWER_LIMIT_MASK)
-				>> TSENS_THRESHOLD_LOWER_LIMIT_SHIFT;
-	else if (!(reg_cntl & TSENS_MIN_STATUS_MASK))
-		lo_code = (reg_th & TSENS_THRESHOLD_MIN_LIMIT_MASK)
-				>> TSENS_THRESHOLD_MIN_LIMIT_SHIFT;
-	break;
+		if (!(reg_cntl & TSENS_UPPER_STATUS_CLR))
+			lo_code = (reg_th & TSENS_THRESHOLD_UPPER_LIMIT_MASK)
+					>> TSENS_THRESHOLD_UPPER_LIMIT_SHIFT;
+		else if (!(reg_cntl & TSENS_LOWER_STATUS_CLR))
+			lo_code = (reg_th & TSENS_THRESHOLD_LOWER_LIMIT_MASK)
+					>> TSENS_THRESHOLD_LOWER_LIMIT_SHIFT;
+		else if (!(reg_cntl & TSENS_MIN_STATUS_MASK))
+			lo_code = (reg_th & TSENS_THRESHOLD_MIN_LIMIT_MASK)
+					>> TSENS_THRESHOLD_MIN_LIMIT_SHIFT;
+		break;
 	case TSENS_TRIP_STAGE2:
 		code = (reg_th & TSENS_THRESHOLD_UPPER_LIMIT_MASK)
 					>> TSENS_THRESHOLD_UPPER_LIMIT_SHIFT;
-	mask = TSENS_UPPER_STATUS_CLR;
+		mask = TSENS_UPPER_STATUS_CLR;
 
-	if (!(reg_cntl & TSENS_MAX_STATUS_MASK))
-		hi_code = (reg_th & TSENS_THRESHOLD_MAX_LIMIT_MASK)
-				>> TSENS_THRESHOLD_MAX_LIMIT_SHIFT;
-	if (!(reg_cntl & TSENS_LOWER_STATUS_CLR))
-		lo_code = (reg_th & TSENS_THRESHOLD_LOWER_LIMIT_MASK)
-				>> TSENS_THRESHOLD_LOWER_LIMIT_SHIFT;
-	else if (!(reg_cntl & TSENS_MIN_STATUS_MASK))
-		lo_code = (reg_th & TSENS_THRESHOLD_MIN_LIMIT_MASK)
-				>> TSENS_THRESHOLD_MIN_LIMIT_SHIFT;
+		if (!(reg_cntl & TSENS_MAX_STATUS_MASK))
+			hi_code = (reg_th & TSENS_THRESHOLD_MAX_LIMIT_MASK)
+					>> TSENS_THRESHOLD_MAX_LIMIT_SHIFT;
+		if (!(reg_cntl & TSENS_LOWER_STATUS_CLR))
+			lo_code = (reg_th & TSENS_THRESHOLD_LOWER_LIMIT_MASK)
+					>> TSENS_THRESHOLD_LOWER_LIMIT_SHIFT;
+		else if (!(reg_cntl & TSENS_MIN_STATUS_MASK))
+			lo_code = (reg_th & TSENS_THRESHOLD_MIN_LIMIT_MASK)
+					>> TSENS_THRESHOLD_MIN_LIMIT_SHIFT;
 		break;
 	case TSENS_TRIP_STAGE1:
 		code = (reg_th & TSENS_THRESHOLD_LOWER_LIMIT_MASK)
 					>> TSENS_THRESHOLD_LOWER_LIMIT_SHIFT;
-	mask = TSENS_LOWER_STATUS_CLR;
+		mask = TSENS_LOWER_STATUS_CLR;
 
-	if (!(reg_cntl & TSENS_MIN_STATUS_MASK))
-		lo_code = (reg_th & TSENS_THRESHOLD_MIN_LIMIT_MASK)
-				>> TSENS_THRESHOLD_MIN_LIMIT_SHIFT;
-	if (!(reg_cntl & TSENS_UPPER_STATUS_CLR))
-		hi_code = (reg_th & TSENS_THRESHOLD_UPPER_LIMIT_MASK)
-				>> TSENS_THRESHOLD_UPPER_LIMIT_SHIFT;
-	else if (!(reg_cntl & TSENS_MAX_STATUS_MASK))
-		hi_code = (reg_th & TSENS_THRESHOLD_MAX_LIMIT_MASK)
-				>> TSENS_THRESHOLD_MAX_LIMIT_SHIFT;
+		if (!(reg_cntl & TSENS_MIN_STATUS_MASK))
+			lo_code = (reg_th & TSENS_THRESHOLD_MIN_LIMIT_MASK)
+					>> TSENS_THRESHOLD_MIN_LIMIT_SHIFT;
+		if (!(reg_cntl & TSENS_UPPER_STATUS_CLR))
+			hi_code = (reg_th & TSENS_THRESHOLD_UPPER_LIMIT_MASK)
+					>> TSENS_THRESHOLD_UPPER_LIMIT_SHIFT;
+		else if (!(reg_cntl & TSENS_MAX_STATUS_MASK))
+			hi_code = (reg_th & TSENS_THRESHOLD_MAX_LIMIT_MASK)
+					>> TSENS_THRESHOLD_MAX_LIMIT_SHIFT;
 		break;
 	case TSENS_TRIP_STAGE0:
 		code = (reg_th & TSENS_THRESHOLD_MIN_LIMIT_MASK)
@@ -448,13 +449,13 @@ static int tsens_tz_get_trip_temp(struct thermal_zone_device *thermal,
 }
 
 static int tsens_tz_get_crit_temp(struct thermal_zone_device *thermal,
-				   unsigned long *temp)
+				  unsigned long *temp)
 {
-		return tsens_tz_get_trip_temp(thermal, TSENS_TRIP_STAGE3, temp);
+	return tsens_tz_get_trip_temp(thermal, TSENS_TRIP_STAGE3, temp);
 }
 
 static int tsens_tz_notify(struct thermal_zone_device *thermal,
-			    int count, enum thermal_trip_type type)
+				int count, enum thermal_trip_type type)
 {
 	/* TSENS driver does not shutdown the device.
 	   All Thermal notification are sent to the
@@ -591,7 +592,7 @@ static irqreturn_t tsens_isr(int irq, void *data)
 	for (i = 0; i < tmdev->tsens_num_sensor; i++) {
 		if (sensor & TSENS_MASK1) {
 			code = readl_relaxed(TSENS_S0_STATUS_ADDR +
-				(i << TSENS_STATUS_ADDR_OFFSET));
+					(i << TSENS_STATUS_ADDR_OFFSET));
 			upper_th_x = code >= threshold;
 			lower_th_x = code <= threshold_low;
 			if (upper_th_x)
@@ -666,7 +667,7 @@ static void tsens_hw_init(void)
 		/* set TSENS_CONFIG bits (bits 29:28 of TSENS_CNTL) to '01';
 			this setting found to be optimal. */
 		reg_cntl = (reg_cntl & ~TSENS_8660_CONFIG_MASK) |
-			(TSENS_8660_CONFIG << TSENS_8660_CONFIG_SHIFT);
+				(TSENS_8660_CONFIG << TSENS_8660_CONFIG_SHIFT);
 
 		writel_relaxed(reg_cntl, TSENS_CNTL_ADDR);
 	}
@@ -695,8 +696,8 @@ static int tsens_calib_sensors8660(void)
 				(readl_relaxed(main_sensor_addr)
 			& red_sensor_mask) >> red_sensor_shift;
 	if (tmdev->sensor[TSENS_MAIN_SENSOR].calib_data_backup)
-		tmdev->sensor[TSENS_MAIN_SENSOR].calib_data =
-		tmdev->sensor[TSENS_MAIN_SENSOR].calib_data_backup;
+			tmdev->sensor[TSENS_MAIN_SENSOR].calib_data =
+			tmdev->sensor[TSENS_MAIN_SENSOR].calib_data_backup;
 	if (!tmdev->sensor[TSENS_MAIN_SENSOR].calib_data) {
 		pr_err("%s: No temperature sensor data for calibration"
 				" in QFPROM!\n", __func__);
@@ -877,6 +878,6 @@ module_init(tsens_tm_init);
 module_exit(tsens_tm_remove);
 
 MODULE_LICENSE("GPL v2");
-MODULE_DESCRIPTION("MSM8x60 Temperature Sensor driver");
+MODULE_DESCRIPTION("MSM8X60 Temperature Sensor driver");
 MODULE_VERSION("1.0");
-MODULE_ALIAS("platform:tsens8x60-tm");
+MODULE_ALIAS("platform:tsens8X60-tm");
