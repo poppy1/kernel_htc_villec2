@@ -24,6 +24,7 @@
 #include <linux/platform_device.h>
 #include <linux/slab.h>
 #include <linux/gpio.h>
+#include <linux/wakelock.h>
 #include <linux/workqueue.h>
 
 #define CY8C_I2C_RETRY_TIMES 	(10)
@@ -74,6 +75,7 @@ bool scr_suspended = false;
 int s2w_h[2][3] = {{0, 0, 0}, {0, 0, 0}};
 cputime64_t s2w_t[3] = {0, 0, 0};
 static struct input_dev * sweep2wake_pwrdev;
+static struct wake_lock sweep2unlock_wake_lock;
 static DEFINE_MUTEX(pwrlock);
 
 #ifdef CONFIG_CMDLINE_OPTIONS
@@ -981,6 +983,7 @@ static int cy8c_cs_suspend(struct i2c_client *client, pm_message_t mesg)
 	if (s2w_switch > 0) {
 		//screen off, enable_irq_wake
 		scr_suspended = true;
+		wake_lock(&sweep2unlock_wake_lock);
 		enable_irq_wake(client->irq);
 	}
 #endif
@@ -1013,6 +1016,7 @@ static int cy8c_cs_resume(struct i2c_client *client)
 	pr_info("[cap] %s\n", __func__);
 #ifdef CONFIG_TOUCHSCREEN_CYPRESS_SWEEP2WAKE
         scr_suspended = false;
+        wake_unlock(&sweep2unlock_wake_lock);
 	if (s2w_switch == 0) {
                 disable_irq_wake(client->irq);
 #endif
@@ -1064,6 +1068,7 @@ static struct i2c_driver cy8c_cs_driver = {
 static int __init cy8c_cs_init(void)
 {
 	printk(KERN_INFO "[cap] %s: enter\n", __func__);
+	wake_lock_init(&sweep2unlock_wake_lock, WAKE_LOCK_SUSPEND, "sweep2unlock");
 	return i2c_add_driver(&cy8c_cs_driver);
 }
 
