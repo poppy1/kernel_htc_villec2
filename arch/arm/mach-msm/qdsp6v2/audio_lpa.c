@@ -51,7 +51,7 @@
 #define pr_err(fmt, ...) pr_aud_err(fmt, ##__VA_ARGS__)
 
 #define MAX_BUF 4
-#define BUFSZ (524288)
+#define BUFSZ (655360)
 
 #define AUDDEC_DEC_PCM 0
 #define Q6_EFFECT_DEBUG 0
