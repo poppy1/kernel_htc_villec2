@@ -28,12 +28,16 @@
 #include <net/inet6_connection_sock.h>
 
 int inet6_csk_bind_conflict(const struct sock *sk,
-			    const struct inet_bind_bucket *tb, bool relax)
+			    const struct inet_bind_bucket *tb)
 {
 	const struct sock *sk2;
 	const struct hlist_node *node;
 
-	
+	/* We must walk the whole port owner list in this case. -DaveM */
+	/*
+	 * See comment in inet_csk_bind_conflict about sock lookup
+	 * vs net namespaces issues.
+	 */
 	sk_for_each_bound(sk2, node, &tb->owners) {
 		if (sk != sk2 &&
 		    (!sk->sk_bound_dev_if ||
@@ -61,9 +65,9 @@ struct dst_entry *inet6_csk_route_req(struct sock *sk,
 
 	memset(&fl6, 0, sizeof(fl6));
 	fl6.flowi6_proto = IPPROTO_TCP;
-	fl6.daddr = treq->rmt_addr;
+	ipv6_addr_copy(&fl6.daddr, &treq->rmt_addr);
 	final_p = fl6_update_dst(&fl6, np->opt, &final);
-	fl6.saddr = treq->loc_addr;
+	ipv6_addr_copy(&fl6.saddr, &treq->loc_addr);
 	fl6.flowi6_oif = sk->sk_bound_dev_if;
 	fl6.flowi6_mark = sk->sk_mark;
 	fl6.fl6_dport = inet_rsk(req)->rmt_port;
@@ -77,8 +81,11 @@ struct dst_entry *inet6_csk_route_req(struct sock *sk,
 	return dst;
 }
 
+/*
+ * request_sock (formerly open request) hash tables.
+ */
 static u32 inet6_synq_hash(const struct in6_addr *raddr, const __be16 rport,
-			   const u32 rnd, const u32 synq_hsize)
+			   const u32 rnd, const u16 synq_hsize)
 {
 	u32 c;
 
@@ -150,9 +157,9 @@ void inet6_csk_addr2sockaddr(struct sock *sk, struct sockaddr * uaddr)
 	struct sockaddr_in6 *sin6 = (struct sockaddr_in6 *) uaddr;
 
 	sin6->sin6_family = AF_INET6;
-	sin6->sin6_addr = np->daddr;
+	ipv6_addr_copy(&sin6->sin6_addr, &np->daddr);
 	sin6->sin6_port	= inet_sk(sk)->inet_dport;
-	
+	/* We do not store received flowlabel for TCP */
 	sin6->sin6_flowinfo = 0;
 	sin6->sin6_scope_id = 0;
 	if (sk->sk_bound_dev_if &&
@@ -204,12 +211,11 @@ int inet6_csk_xmit(struct sk_buff *skb, struct flowi *fl_unused)
 	struct flowi6 fl6;
 	struct dst_entry *dst;
 	struct in6_addr *final_p, final;
-	int res;
 
 	memset(&fl6, 0, sizeof(fl6));
 	fl6.flowi6_proto = sk->sk_protocol;
-	fl6.daddr = np->daddr;
-	fl6.saddr = np->saddr;
+	ipv6_addr_copy(&fl6.daddr, &np->daddr);
+	ipv6_addr_copy(&fl6.saddr, &np->saddr);
 	fl6.flowlabel = np->flow_label;
 	IP6_ECN_flow_xmit(sk, fl6.flowlabel);
 	fl6.flowi6_oif = sk->sk_bound_dev_if;
@@ -235,14 +241,12 @@ int inet6_csk_xmit(struct sk_buff *skb, struct flowi *fl_unused)
 		__inet6_csk_dst_store(sk, dst, NULL, NULL);
 	}
 
-	rcu_read_lock();
-	skb_dst_set_noref(skb, dst);
+	skb_dst_set(skb, dst_clone(dst));
 
-	
-	fl6.daddr = np->daddr;
+	/* Restore final destination back after routing done */
+	ipv6_addr_copy(&fl6.daddr, &np->daddr);
 
-	res = ip6_xmit(sk, skb, &fl6, np->opt, np->tclass);
-	rcu_read_unlock();
-	return res;
+	return ip6_xmit(sk, skb, &fl6, np->opt);
 }
+
 EXPORT_SYMBOL_GPL(inet6_csk_xmit);

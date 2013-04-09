@@ -1,7 +1,13 @@
-#include <linux/export.h>
+#include <linux/module.h>
 #include <linux/bitops.h>
 #include <asm/types.h>
 
+/**
+ * hweightN - returns the hamming weight of a N-bit word
+ * @x: the word to weigh
+ *
+ * The Hamming Weight of a number is the total number of bits set in it.
+ */
 
 unsigned int __sw_hweight32(unsigned int w)
 {

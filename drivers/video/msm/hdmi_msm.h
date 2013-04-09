@@ -14,25 +14,31 @@
 #define __HDMI_MSM_H__
 
 #include <mach/msm_iomap.h>
+#include <linux/switch.h>
 #include "external_common.h"
+/* #define PORT_DEBUG */
 
 #ifdef PORT_DEBUG
 const char *hdmi_msm_name(uint32 offset);
 void hdmi_outp(uint32 offset, uint32 value);
 uint32 hdmi_inp(uint32 offset);
-
-#define HDMI_OUTP_ND(offset, value)	outpdw(MSM_HDMI_BASE+(offset), (value))
+// 8x60 uses HDMI_BASE; 8960 uses MSM_HDMI_BASE
+#define HDMI_OUTP_ND(offset, value)	outpdw(HDMI_BASE+(offset), (value))
 #define HDMI_OUTP(offset, value)	hdmi_outp((offset), (value))
-#define HDMI_INP_ND(offset)		inpdw(MSM_HDMI_BASE+(offset))
+#define HDMI_INP_ND(offset)		inpdw(HDMI_BASE+(offset))
 #define HDMI_INP(offset)		hdmi_inp((offset))
 #else
-#define HDMI_OUTP_ND(offset, value)	outpdw(MSM_HDMI_BASE+(offset), (value))
-#define HDMI_OUTP(offset, value)	outpdw(MSM_HDMI_BASE+(offset), (value))
-#define HDMI_INP_ND(offset)		inpdw(MSM_HDMI_BASE+(offset))
-#define HDMI_INP(offset)		inpdw(MSM_HDMI_BASE+(offset))
+#define HDMI_OUTP_ND(offset, value)	outpdw(HDMI_BASE+(offset), (value))
+#define HDMI_OUTP(offset, value)	outpdw(HDMI_BASE+(offset), (value))
+#define HDMI_INP_ND(offset)		inpdw(HDMI_BASE+(offset))
+#define HDMI_INP(offset)		inpdw(HDMI_BASE+(offset))
 #endif
 
 
+/*
+ * Ref. HDMI 1.4a
+ * Supplement-1 CEC Section 6, 7
+ */
 struct hdmi_msm_cec_msg {
 	uint8 sender_id;
 	uint8 recvr_id;
@@ -44,6 +50,7 @@ struct hdmi_msm_cec_msg {
 
 #define QFPROM_BASE		((uint32)hdmi_msm_state->qfprom_io)
 #define HDMI_BASE		((uint32)hdmi_msm_state->hdmi_io)
+#define SWITCH_DEV_SUPPORT
 
 struct hdmi_msm_state_type {
 	boolean panel_power_on;
@@ -66,14 +73,12 @@ struct hdmi_msm_state_type {
 	struct work_struct hdcp_reauth_work, hdcp_work;
 	struct completion hdcp_success_done;
 	struct timer_list hdcp_timer;
-#endif 
+#endif /* CONFIG_FB_MSM_HDMI_MSM_PANEL_HDCP_SUPPORT */
 
 #ifdef CONFIG_FB_MSM_HDMI_MSM_PANEL_CEC_SUPPORT
 	boolean cec_enabled;
-	unsigned int first_monitor;
 	int cec_logical_addr;
 	struct completion cec_frame_wr_done;
-	struct timer_list cec_read_timer;
 #define CEC_STATUS_WR_ERROR	0x0001
 #define CEC_STATUS_WR_DONE	0x0002
 #define CEC_STATUS_WR_TMOUT	0x0004
@@ -83,15 +88,9 @@ struct hdmi_msm_state_type {
 	struct hdmi_msm_cec_msg *cec_queue_wr;
 	struct hdmi_msm_cec_msg *cec_queue_rd;
 	boolean cec_queue_full;
-	boolean fsm_reset_done;
-
-	struct completion cec_line_latch_wait;
-	struct work_struct cec_latch_detect_work;
-
 #define CEC_QUEUE_SIZE		16
 #define CEC_QUEUE_END	 (hdmi_msm_state->cec_queue_start + CEC_QUEUE_SIZE)
-#define RETRANSMIT_MAX_NUM	5
-#endif 
+#endif /* CONFIG_FB_MSM_HDMI_MSM_PANEL_CEC_SUPPORT */
 
 	int irq;
 	struct msm_hdmi_platform_data *pd;
@@ -102,6 +101,9 @@ struct hdmi_msm_state_type {
 	void __iomem *hdmi_io;
 
 	struct external_common_state_type common;
+#ifdef SWITCH_DEV_SUPPORT
+	struct switch_dev hpd_switch;
+#endif
 };
 
 extern struct hdmi_msm_state_type *hdmi_msm_state;
@@ -125,6 +127,6 @@ void hdmi_msm_cec_write_logical_addr(int addr);
 void hdmi_msm_cec_msg_recv(void);
 void hdmi_msm_cec_one_touch_play(void);
 void hdmi_msm_cec_msg_send(struct hdmi_msm_cec_msg *msg);
-#endif 
+#endif /* CONFIG_FB_MSM_HDMI_MSM_PANEL_CEC_SUPPORT */
 
-#endif 
+#endif /* __HDMI_MSM_H__ */

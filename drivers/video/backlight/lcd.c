@@ -17,13 +17,17 @@
 
 #if defined(CONFIG_FB) || (defined(CONFIG_FB_MODULE) && \
 			   defined(CONFIG_LCD_CLASS_DEVICE_MODULE))
+/* This callback gets called when something important happens inside a
+ * framebuffer driver. We're looking if that important event is blanking,
+ * and if it is, we're switching lcd power as well ...
+ */
 static int fb_notifier_callback(struct notifier_block *self,
 				 unsigned long event, void *data)
 {
 	struct lcd_device *ld;
 	struct fb_event *evdata = data;
 
-	
+	/* If we aren't interested in this event, skip it immediately ... */
 	switch (event) {
 	case FB_EVENT_BLANK:
 	case FB_EVENT_MODE_CHANGE:
@@ -71,7 +75,7 @@ static int lcd_register_fb(struct lcd_device *ld)
 static inline void lcd_unregister_fb(struct lcd_device *ld)
 {
 }
-#endif 
+#endif /* CONFIG_FB */
 
 static ssize_t lcd_show_power(struct device *dev, struct device_attribute *attr,
 		char *buf)
@@ -93,16 +97,19 @@ static ssize_t lcd_store_power(struct device *dev,
 		struct device_attribute *attr, const char *buf, size_t count)
 {
 	int rc = -ENXIO;
+	char *endp;
 	struct lcd_device *ld = to_lcd_device(dev);
-	unsigned long power;
+	int power = simple_strtoul(buf, &endp, 0);
+	size_t size = endp - buf;
 
-	rc = kstrtoul(buf, 0, &power);
-	if (rc)
-		return rc;
+	if (isspace(*endp))
+		size++;
+	if (size != count)
+		return -EINVAL;
 
 	mutex_lock(&ld->ops_lock);
 	if (ld->ops && ld->ops->set_power) {
-		pr_debug("lcd: set power to %lu\n", power);
+		pr_debug("lcd: set power to %d\n", power);
 		ld->ops->set_power(ld, power);
 		rc = count;
 	}
@@ -129,16 +136,19 @@ static ssize_t lcd_store_contrast(struct device *dev,
 		struct device_attribute *attr, const char *buf, size_t count)
 {
 	int rc = -ENXIO;
+	char *endp;
 	struct lcd_device *ld = to_lcd_device(dev);
-	unsigned long contrast;
+	int contrast = simple_strtoul(buf, &endp, 0);
+	size_t size = endp - buf;
 
-	rc = kstrtoul(buf, 0, &contrast);
-	if (rc)
-		return rc;
+	if (isspace(*endp))
+		size++;
+	if (size != count)
+		return -EINVAL;
 
 	mutex_lock(&ld->ops_lock);
 	if (ld->ops && ld->ops->set_contrast) {
-		pr_debug("lcd: set contrast to %lu\n", contrast);
+		pr_debug("lcd: set contrast to %d\n", contrast);
 		ld->ops->set_contrast(ld, contrast);
 		rc = count;
 	}
@@ -170,6 +180,17 @@ static struct device_attribute lcd_device_attributes[] = {
 	__ATTR_NULL,
 };
 
+/**
+ * lcd_device_register - register a new object of lcd_device class.
+ * @name: the name of the new object(must be the same as the name of the
+ *   respective framebuffer device).
+ * @devdata: an optional pointer to be stored in the device. The
+ *   methods may retrieve it by using lcd_get_data(ld).
+ * @ops: the lcd operations structure.
+ *
+ * Creates and registers a new lcd device. Returns either an ERR_PTR()
+ * or a pointer to the newly allocated device.
+ */
 struct lcd_device *lcd_device_register(const char *name, struct device *parent,
 		void *devdata, struct lcd_ops *ops)
 {
@@ -209,6 +230,12 @@ struct lcd_device *lcd_device_register(const char *name, struct device *parent,
 }
 EXPORT_SYMBOL(lcd_device_register);
 
+/**
+ * lcd_device_unregister - unregisters a object of lcd_device class.
+ * @ld: the lcd device object to be unregistered and freed.
+ *
+ * Unregisters a previously registered via lcd_device_register object.
+ */
 void lcd_device_unregister(struct lcd_device *ld)
 {
 	if (!ld)
@@ -241,6 +268,10 @@ static int __init lcd_class_init(void)
 	return 0;
 }
 
+/*
+ * if this is compiled into the kernel, we need to ensure that the
+ * class is registered before users of the class try to register lcd's
+ */
 postcore_initcall(lcd_class_init);
 module_exit(lcd_class_exit);
 

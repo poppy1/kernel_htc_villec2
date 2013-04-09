@@ -1,4 +1,4 @@
-/* Copyright (c) 2010-2012, Code Aurora Forum. All rights reserved.
+/* Copyright (c) 2010-2011, Code Aurora Forum. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -26,7 +26,6 @@
 #include <linux/pmic8058-xoadc.h>
 #include <linux/slab.h>
 #include <linux/semaphore.h>
-#include <linux/module.h>
 
 #include <mach/dal.h>
 
@@ -40,10 +39,7 @@
 #define MSM_ADC_DALRPC_CMD_REQ_CONV	9
 #define MSM_ADC_DALRPC_CMD_INPUT_PROP	11
 
-#define MSM_ADC_DALRC_CONV_TIMEOUT	(5 * HZ)  
-
-#define MSM_8x25_ADC_DEV_ID		0
-#define MSM_8x25_CHAN_ID		16
+#define MSM_ADC_DALRC_CONV_TIMEOUT	(5 * HZ)  /* 5 seconds */
 
 enum dal_error {
 	DAL_ERROR_INVALID_DEVICE_IDX = 1,
@@ -76,18 +72,18 @@ struct adc_dev {
 };
 
 struct msm_adc_drv {
-	
+	/*  Common to both XOADC and EPM  */
 	struct platform_device		*pdev;
 	struct device			*hwmon;
 	struct miscdevice		misc;
-	
+	/*  XOADC variables  */
 	struct sensor_device_attribute	*sens_attr;
 	struct workqueue_struct		*wq;
 	atomic_t			online;
 	atomic_t			total_outst;
 	wait_queue_head_t		total_outst_wait;
 
-	
+	/*  EPM variables  */
 	void				*dev_h;
 	struct adc_dev			*devs[MSM_ADC_MAX_NUM_DEVS];
 	struct mutex			prop_lock;
@@ -99,9 +95,8 @@ struct msm_adc_drv {
 static bool epm_init;
 static bool epm_fluid_enabled;
 
+/* Needed to support file_op interfaces */
 static struct msm_adc_drv *msm_adc_drv;
-
-static bool conv_first_request;
 
 static ssize_t msm_adc_show_curr(struct device *dev,
 				struct device_attribute *devattr, char *buf);
@@ -195,11 +190,16 @@ static int msm_adc_release(struct inode *inode, struct file *file)
 
 	mutex_lock(&client->lock);
 
-	
+	/* prevent any further requests while we teardown the client */
 	client->online = 0;
 
 	mutex_unlock(&client->lock);
 
+	/*
+	 * We may still have outstanding transactions in flight from this
+	 * client that have not completed. Make sure they're completed
+	 * before removing the client.
+	 */
 	rc = wait_event_interruptible(client->outst_wait,
 				      no_pending_client_requests(client));
 	if (rc) {
@@ -208,6 +208,10 @@ static int msm_adc_release(struct inode *inode, struct file *file)
 		return rc;
 	}
 
+	/*
+	 * All transactions have completed. Add slot resources back to the
+	 * appropriate devices.
+	 */
 	list_for_each_entry_safe(slot, tmp, &client->complete_list, list) {
 		slot->client = NULL;
 		list_del(&slot->list);
@@ -327,7 +331,7 @@ static int msm_adc_aio_conversion(struct msm_adc_drv *msm_adc,
 	struct msm_adc_channels *channel = &pdata->channel[request->chan];
 	struct adc_conv_slot *slot;
 
-	
+	/* we could block here, but only for a bounded time */
 	channel->adc_access_fn->adc_slot_request(channel->adc_dev_instance,
 									&slot);
 
@@ -337,9 +341,9 @@ static int msm_adc_aio_conversion(struct msm_adc_drv *msm_adc,
 		client->num_outstanding++;
 		mutex_unlock(&client->lock);
 
-		
+		/* indicates non blocking request to callback handler */
 		slot->blocking = 0;
-		slot->compk = NULL;
+		slot->compk = NULL;/*For kernel space usage; n/a for usr space*/
 		slot->conv.result.chan = client->adc_chan = request->chan;
 		slot->client = client;
 		slot->adc_request = START_OF_CONV;
@@ -385,7 +389,7 @@ static int msm_adc_fluid_hw_init(struct msm_adc_drv *msm_adc)
 		epm_fluid_enabled = true;
 	}
 
-  
+  /* return success for now but check for errors from hw init configuration */
 	return 0;
 }
 
@@ -394,6 +398,10 @@ static int msm_adc_poll_complete(struct msm_adc_drv *msm_adc,
 {
 	int rc;
 
+	/*
+	 * Don't proceed if there there's nothing queued on this client.
+	 * We could deadlock otherwise in a single threaded scenario.
+	 */
 	if (no_pending_client_requests(client) && !data_avail(client, pending))
 		return -EDEADLK;
 
@@ -432,7 +440,7 @@ static int msm_adc_read_result(struct msm_adc_drv *msm_adc,
 
 	*result = slot->conv.result;
 
-	
+	/* restore this slot to reserve */
 	channel[slot->conv.result.chan].adc_access_fn->adc_restore_slot(
 		channel[slot->conv.result.chan].adc_dev_instance, slot);
 
@@ -598,7 +606,7 @@ static ssize_t msm_adc_show_curr(struct device *dev,
 	struct sensor_device_attribute *attr = to_sensor_dev_attr(devattr);
 	struct msm_adc_drv *msm_adc = dev_get_drvdata(dev);
 	struct msm_adc_platform_data *pdata = msm_adc->pdev->dev.platform_data;
-	struct adc_chan_result result;
+	struct adc_chan_result result = {0};
 	int rc;
 
 #ifdef CONFIG_PMIC8058_XOADC
@@ -667,7 +675,7 @@ static int msm_rpc_adc_blocking_conversion(struct msm_adc_drv *msm_adc,
 
 	mutex_unlock(&conv_s->list_lock);
 
-	
+	/* indicates blocking request to callback handler */
 	slot->blocking = 1;
 
 	params.target.dev_idx = dest.dal.dev_idx;
@@ -718,22 +726,12 @@ static int msm_adc_blocking_conversion(struct msm_adc_drv *msm_adc,
 	struct msm_adc_platform_data *pdata =
 					msm_adc_drv->pdev->dev.platform_data;
 	struct msm_adc_channels *channel = &pdata->channel[hwmon_chan];
-	int ret = 0;
-
-	if (conv_first_request) {
-		ret = pm8058_xoadc_calib_device(channel->adc_dev_instance);
-		if (ret) {
-			pr_err("pmic8058 xoadc calibration failed, retry\n");
-			return ret;
-		}
-		conv_first_request = false;
-	}
 
 	channel->adc_access_fn->adc_slot_request(channel->adc_dev_instance,
 									&slot);
 	if (slot) {
 		slot->conv.result.chan = hwmon_chan;
-		
+		/* indicates blocking request to callback handler */
 		slot->blocking = 1;
 		slot->adc_request = START_OF_CONV;
 		slot->chan_path = channel->chan_path_type;
@@ -776,7 +774,7 @@ int32_t adc_channel_open(uint32_t channel, void **h)
 	}
 
 	if (i == pdata->num_chan_supported)
-		return -EBADF; 
+		return -EBADF; /* unknown channel */
 
 	client = kzalloc(sizeof(struct msm_client_data), GFP_KERNEL);
 	if (!client) {
@@ -815,16 +813,6 @@ int32_t adc_channel_request_conv(void *h, struct completion *conv_complete_evt)
 					msm_adc_drv->pdev->dev.platform_data;
 	struct msm_adc_channels *channel = &pdata->channel[client->adc_chan];
 	struct adc_conv_slot *slot;
-	int ret;
-
-	if (conv_first_request) {
-		ret = pm8058_xoadc_calib_device(channel->adc_dev_instance);
-		if (ret) {
-			pr_err("pmic8058 xoadc calibration failed, retry\n");
-			return ret;
-		}
-		conv_first_request = false;
-	}
 
 	channel->adc_access_fn->adc_slot_request(channel->adc_dev_instance,
 									&slot);
@@ -876,11 +864,51 @@ int32_t adc_channel_read_result(void *h, struct adc_chan_result *chan_result)
 
 	*chan_result = slot->conv.result;
 
-	
+	/* restore this slot to reserve */
 	channel[slot->conv.result.chan].adc_access_fn->adc_restore_slot(
 		channel[slot->conv.result.chan].adc_dev_instance, slot);
 
 	return rc;
+}
+
+int32_t adc_calib_request(void *h, struct completion *calib_complete_evt)
+{
+	struct msm_client_data *client = (struct msm_client_data *)h;
+	struct msm_adc_platform_data *pdata =
+					msm_adc_drv->pdev->dev.platform_data;
+	struct msm_adc_channels *channel = &pdata->channel[client->adc_chan];
+	struct adc_conv_slot *slot;
+	int rc, calib_status;
+
+	channel->adc_access_fn->adc_slot_request(channel->adc_dev_instance,
+				&slot);
+	if (slot) {
+		slot->conv.result.chan = client->adc_chan;
+		slot->blocking = 0;
+		slot->compk = calib_complete_evt;
+		slot->adc_request = START_OF_CALIBRATION;
+		slot->chan_path = channel->chan_path_type;
+		slot->chan_adc_config = channel->adc_config_type;
+		slot->chan_adc_calib = channel->adc_calib_type;
+		rc = channel->adc_access_fn->adc_calibrate(
+			channel->adc_dev_instance, slot, &calib_status);
+
+		if (calib_status == CALIB_NOT_REQUIRED) {
+			channel->adc_access_fn->adc_restore_slot(
+					channel->adc_dev_instance, slot);
+			/* client will always wait in case when
+				calibration is not required */
+			complete(calib_complete_evt);
+		} else {
+			atomic_inc(&msm_adc_drv->total_outst);
+			mutex_lock(&client->lock);
+			client->num_outstanding++;
+			mutex_unlock(&client->lock);
+		}
+
+		return rc;
+	}
+	return -EBUSY;
 }
 
 static void msm_rpc_adc_conv_cb(void *context, u32 param,
@@ -892,11 +920,11 @@ static void msm_rpc_adc_conv_cb(void *context, u32 param,
 
 	memcpy(&slot->result, result, sizeof(slot->result));
 
-	
+	/* for blocking requests, signal complete */
 	if (slot->blocking)
 		complete(&slot->comp);
 
-	
+	/* for non-blocking requests, add slot to the client completed list */
 	else {
 		struct msm_client_data *client = slot->client;
 
@@ -906,6 +934,11 @@ static void msm_rpc_adc_conv_cb(void *context, u32 param,
 		client->num_complete++;
 		client->num_outstanding--;
 
+		/*
+		 * if the client release has been invoked and this is call
+		 * corresponds to the last request, then signal release
+		 * to complete.
+		 */
 		if (slot->client->online == 0 && client->num_outstanding == 0)
 			wake_up_interruptible_all(&client->outst_wait);
 
@@ -915,7 +948,7 @@ static void msm_rpc_adc_conv_cb(void *context, u32 param,
 
 		atomic_dec(&msm_adc->total_outst);
 
-		
+		/* verify driver remove has not been invoked */
 		if (atomic_read(&msm_adc->online) == 0 &&
 				atomic_read(&msm_adc->total_outst) == 0)
 			wake_up_interruptible_all(&msm_adc->total_outst_wait);
@@ -1099,7 +1132,7 @@ static int __devinit msm_rpc_adc_device_init_hwmon(struct platform_device *pdev,
 		adc_dev->fnames[i] = (char *)adc_dev->fnames +
 			i * MSM_ADC_MAX_FNAME + num_chans * sizeof(char *);
 		strcpy(adc_dev->fnames[i], prefix);
-		sprintf(tmpbuf, "%d", transl->hwmon_start + i);
+		snprintf(tmpbuf, 5, "%d", transl->hwmon_start + i);
 		strcat(adc_dev->fnames[i], tmpbuf);
 		strcat(adc_dev->fnames[i], postfix);
 
@@ -1156,24 +1189,18 @@ static int __devinit msm_rpc_adc_device_init(struct platform_device *pdev)
 			goto dev_init_err;
 		}
 
-		if (!pdata->target_hw == MSM_8x25) {
-			
-			rc = msm_adc_getinputproperties(msm_adc, adc_dev->name,
+		/* DAL device lookup */
+		rc = msm_adc_getinputproperties(msm_adc, adc_dev->name,
 								&target);
-			if (rc) {
-				dev_err(&pdev->dev, "No such DAL device[%s]\n",
+		if (rc) {
+			dev_err(&pdev->dev, "No such DAL device[%s]\n",
 							adc_dev->name);
-				goto dev_init_err;
-			}
-
-			adc_dev->transl.dal_dev_idx = target.dal.dev_idx;
-			adc_dev->nchans = target.dal.chan_idx;
-		} else {
-			adc_dev->transl.dal_dev_idx = MSM_8x25_ADC_DEV_ID;
-			adc_dev->nchans = MSM_8x25_CHAN_ID;
+			goto dev_init_err;
 		}
 
+		adc_dev->transl.dal_dev_idx = target.dal.dev_idx;
 		adc_dev->transl.hwmon_dev_idx = i;
+		adc_dev->nchans = target.dal.chan_idx;
 		adc_dev->transl.hwmon_start = hwmon_cntr;
 		adc_dev->transl.hwmon_end = hwmon_cntr + adc_dev->nchans - 1;
 		hwmon_cntr += adc_dev->nchans;
@@ -1237,6 +1264,9 @@ err_cleanup:
 	return rc;
 }
 
+/*
+ * Process the deferred job
+ */
 void msm_adc_wq_work(struct work_struct *work)
 {
 	struct adc_properties *adc_properties;
@@ -1246,7 +1276,7 @@ void msm_adc_wq_work(struct work_struct *work)
 	struct msm_adc_platform_data *pdata =
 					msm_adc_drv->pdev->dev.platform_data;
 	struct msm_adc_channels *channel = &pdata->channel[idx];
-	int32_t adc_code;
+	int32_t adc_code = 0;
 
 	switch (slot->adc_request) {
 	case START_OF_CONV:
@@ -1262,8 +1292,12 @@ void msm_adc_wq_work(struct work_struct *work)
 		if (channel->chan_processor)
 			channel->chan_processor(adc_code, adc_properties,
 				&slot->chan_properties, &slot->conv.result);
+		/* Intentionally a fall thru here.  Calibraton does not need
+		to perform channel processing, etc.  However, both
+		end of conversion and end of calibration requires the below
+		fall thru code to be executed. */
 	case END_OF_CALIBRATION:
-		
+		/* for blocking requests, signal complete */
 		if (slot->blocking)
 			complete(&slot->comp);
 		else {
@@ -1277,6 +1311,11 @@ void msm_adc_wq_work(struct work_struct *work)
 			}
 			client->num_outstanding--;
 
+		/*
+		 * if the client release has been invoked and this is call
+		 * corresponds to the last request, then signal release
+		 * to complete.
+		 */
 			if (slot->client->online == 0 &&
 						client->num_outstanding == 0)
 				wake_up_interruptible_all(&client->outst_wait);
@@ -1287,20 +1326,21 @@ void msm_adc_wq_work(struct work_struct *work)
 
 			atomic_dec(&msm_adc_drv->total_outst);
 
-			
+			/* verify driver remove has not been invoked */
 			if (atomic_read(&msm_adc_drv->online) == 0 &&
 				atomic_read(&msm_adc_drv->total_outst) == 0)
 				wake_up_interruptible_all(
 					&msm_adc_drv->total_outst_wait);
 
-			if (slot->compk) 
+			if (slot->compk) /* Kernel space request */
 				complete(slot->compk);
 			if (slot->adc_request == END_OF_CALIBRATION)
 				channel->adc_access_fn->adc_restore_slot(
 					channel->adc_dev_instance, slot);
 		}
 	break;
-	case START_OF_CALIBRATION: 
+	case START_OF_CALIBRATION: /* code here to please code reviewers
+					to satisfy silly compiler warnings */
 	break;
 	}
 }
@@ -1358,7 +1398,7 @@ static struct platform_driver msm_adc_rpcrouter_remote_driver = {
 	},
 };
 
-static int __devinit msm_adc_probe(struct platform_device *pdev)
+static int msm_adc_probe(struct platform_device *pdev)
 {
 	struct msm_adc_platform_data *pdata = pdev->dev.platform_data;
 	struct msm_adc_drv *msm_adc;
@@ -1418,7 +1458,6 @@ static int __devinit msm_adc_probe(struct platform_device *pdev)
 		else
 			msm_rpc_adc_init(pdev);
 	}
-	conv_first_request = true;
 
 	pr_info("msm_adc successfully registered\n");
 
@@ -1445,6 +1484,10 @@ static int __devexit msm_adc_remove(struct platform_device *pdev)
 	hwmon_device_unregister(msm_adc->hwmon);
 	msm_adc->hwmon = NULL;
 
+	/*
+	 * We may still have outstanding transactions in flight that have not
+	 * completed. Make sure they're completed before tearing down.
+	 */
 	rc = wait_event_interruptible(msm_adc->total_outst_wait,
 				      atomic_read(&msm_adc->total_outst) == 0);
 	if (rc) {

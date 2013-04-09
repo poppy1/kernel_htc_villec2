@@ -49,6 +49,7 @@ struct pm8058_led_config {
 	int pre_div;
 	int pre_div_exp;
 	int pwm_value;
+/* for LUT */
 	int period_us;
 	int start_index;
 	int duites_size;
@@ -78,6 +79,7 @@ struct pm8058_led_data {
 	int pre_div;
 	int pre_div_exp;
 	int pwm_value;
+/* for LUT */
 	int period_us;
 	int start_index;
 	int duites_size;
@@ -85,5 +87,5 @@ struct pm8058_led_data {
 	int lut_flag;
 	int out_current;
 };
-void pm8xxx_led_current_set_for_key (int brightness_key);
-#endif 
+void button_backlight_flash (int brightness_key);
+#endif /* _LINUX_LEDS_PM8058_H */

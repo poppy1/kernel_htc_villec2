@@ -1,7 +1,9 @@
 #
 # Makefile for the MSM specific device drivers.
 #
+ifeq ($(CONFIG_ARCH_MSM7X30),y)
+obj-$(CONFIG_MSM_SSBI) += ssbi_7x30.o
+else
 obj-$(CONFIG_MSM_SSBI) += ssbi.o
-obj-$(CONFIG_USB_BAM) += usb_bam.o
+endif
 obj-$(CONFIG_SPS) += sps/
-obj-$(CONFIG_QPNP_PWM) += qpnp-pwm.o

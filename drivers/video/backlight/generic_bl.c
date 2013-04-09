@@ -21,6 +21,7 @@ static int genericbl_intensity;
 static struct backlight_device *generic_backlight_device;
 static struct generic_bl_info *bl_machinfo;
 
+/* Flag to signal when the battery is low */
 #define GENERICBL_BATTLOW       BL_CORE_DRIVER1
 
 static int genericbl_send_intensity(struct backlight_device *bd)
@@ -51,7 +52,11 @@ static int genericbl_get_intensity(struct backlight_device *bd)
 	return genericbl_intensity;
 }
 
-void genericbl_limit_intensity(int limit)
+/*
+ * Called when the battery is low to limit the backlight intensity.
+ * If limit==0 clear any limit, otherwise limit the intensity
+ */
+void corgibl_limit_intensity(int limit)
 {
 	struct backlight_device *bd = generic_backlight_device;
 
@@ -63,7 +68,7 @@ void genericbl_limit_intensity(int limit)
 	backlight_update_status(generic_backlight_device);
 	mutex_unlock(&bd->ops_lock);
 }
-EXPORT_SYMBOL(genericbl_limit_intensity);
+EXPORT_SYMBOL(corgibl_limit_intensity);
 
 static const struct backlight_ops genericbl_ops = {
 	.options = BL_CORE_SUSPENDRESUME,
@@ -127,7 +132,18 @@ static struct platform_driver genericbl_driver = {
 	},
 };
 
-module_platform_driver(genericbl_driver);
+static int __init genericbl_init(void)
+{
+	return platform_driver_register(&genericbl_driver);
+}
+
+static void __exit genericbl_exit(void)
+{
+	platform_driver_unregister(&genericbl_driver);
+}
+
+module_init(genericbl_init);
+module_exit(genericbl_exit);
 
 MODULE_AUTHOR("Richard Purdie <rpurdie@rpsys.net>");
 MODULE_DESCRIPTION("Generic Backlight Driver");

@@ -16,6 +16,14 @@ struct xfrm_policy_hash {
 
 struct netns_xfrm {
 	struct list_head	state_all;
+	/*
+	 * Hash table to find appropriate SA towards given target (endpoint of
+	 * tunnel or destination of transport mode) allowed by selector.
+	 *
+	 * Main use is finding SA after policy selected tunnel or transport
+	 * mode. Also, it can be used by ah/esp icmp error handler to find
+	 * offending SA.
+	 */
 	struct hlist_head	*state_bydst;
 	struct hlist_head	*state_bysrc;
 	struct hlist_head	*state_byspi;
@@ -48,7 +56,7 @@ struct netns_xfrm {
 #endif
 
 	struct dst_ops		xfrm4_dst_ops;
-#if IS_ENABLED(CONFIG_IPV6)
+#if defined(CONFIG_IPV6) || defined(CONFIG_IPV6_MODULE)
 	struct dst_ops		xfrm6_dst_ops;
 #endif
 };

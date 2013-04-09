@@ -7,7 +7,7 @@
  */
 #define _GNU_SOURCE
 #include <string.h>
-
+#define LKC_DIRECT_LINK
 #include "lkc.h"
 #include "nconf.h"
 #include <ctype.h>
@@ -182,6 +182,8 @@ setmod_text[] = N_(
 "This feature depends on another which\n"
 "has been configured as a module.\n"
 "As a result, this feature will be built as a module."),
+nohelp_text[] = N_(
+"There is no help available for this option.\n"),
 load_config_text[] = N_(
 "Enter the name of the configuration file you wish to load.\n"
 "Accept the name shown to restore the configuration you\n"
@@ -264,18 +266,19 @@ static int indent;
 static struct menu *current_menu;
 static int child_count;
 static int single_menu_mode;
+/* the window in which all information appears */
 static WINDOW *main_window;
+/* the largest size of the menu window */
 static int mwin_max_lines;
 static int mwin_max_cols;
+/* the window in which we show option buttons */
 static MENU *curses_menu;
 static ITEM *curses_menu_items[MAX_MENU_ITEMS];
 static struct mitem k_menu_items[MAX_MENU_ITEMS];
 static int items_num;
 static int global_exit;
+/* the currently selected button */
 const char *current_instructions = menu_instructions;
-
-static char *dialog_input_result;
-static int dialog_input_result_len;
 
 static void conf(struct menu *menu);
 static void conf_choice(struct menu *menu);
@@ -384,6 +387,7 @@ static void print_function_line(void)
 	(void) wattrset(main_window, attributes[NORMAL]);
 }
 
+/* help */
 static void handle_f1(int *key, struct menu *current_item)
 {
 	show_scroll_win(main_window,
@@ -391,12 +395,14 @@ static void handle_f1(int *key, struct menu *current_item)
 	return;
 }
 
+/* symbole help */
 static void handle_f2(int *key, struct menu *current_item)
 {
 	show_help(current_item);
 	return;
 }
 
+/* instructions */
 static void handle_f3(int *key, struct menu *current_item)
 {
 	show_scroll_win(main_window,
@@ -405,6 +411,7 @@ static void handle_f3(int *key, struct menu *current_item)
 	return;
 }
 
+/* config */
 static void handle_f4(int *key, struct menu *current_item)
 {
 	int res = btn_dialog(main_window,
@@ -420,36 +427,42 @@ static void handle_f4(int *key, struct menu *current_item)
 	return;
 }
 
+/* back */
 static void handle_f5(int *key, struct menu *current_item)
 {
 	*key = KEY_LEFT;
 	return;
 }
 
+/* save */
 static void handle_f6(int *key, struct menu *current_item)
 {
 	conf_save();
 	return;
 }
 
+/* load */
 static void handle_f7(int *key, struct menu *current_item)
 {
 	conf_load();
 	return;
 }
 
+/* search */
 static void handle_f8(int *key, struct menu *current_item)
 {
 	search_conf();
 	return;
 }
 
+/* exit */
 static void handle_f9(int *key, struct menu *current_item)
 {
 	do_exit();
 	return;
 }
 
+/* return != 0 to indicate the key was handles */
 static int process_special_keys(int *key, struct menu *menu)
 {
 	int i;
@@ -483,6 +496,7 @@ static void clean_items(void)
 typedef enum {MATCH_TINKER_PATTERN_UP, MATCH_TINKER_PATTERN_DOWN,
 	FIND_NEXT_MATCH_DOWN, FIND_NEXT_MATCH_UP} match_f;
 
+/* return the index of the matched item, or -1 if no such item exists */
 static int get_mext_match(const char *match_str, match_f flag)
 {
 	int match_start = item_index(current_item(curses_menu));
@@ -510,6 +524,7 @@ static int get_mext_match(const char *match_str, match_f flag)
 	}
 }
 
+/* Make a new item. */
 static void item_make(struct menu *menu, char tag, const char *fmt, ...)
 {
 	va_list ap;
@@ -540,11 +555,16 @@ static void item_make(struct menu *menu, char tag, const char *fmt, ...)
 			k_menu_items[items_num].str);
 	set_item_userptr(curses_menu_items[items_num],
 			&k_menu_items[items_num]);
+	/*
+	if (!k_menu_items[items_num].is_visible)
+		item_opts_off(curses_menu_items[items_num], O_SELECTABLE);
+	*/
 
 	items_num++;
 	curses_menu_items[items_num] = NULL;
 }
 
+/* very hackish. adds a string to the last item added */
 static void item_add_str(const char *fmt, ...)
 {
 	va_list ap;
@@ -572,6 +592,7 @@ static void item_add_str(const char *fmt, ...)
 			&k_menu_items[index]);
 }
 
+/* get the tag of the currently selected item */
 static char item_tag(void)
 {
 	ITEM *cur;
@@ -624,6 +645,9 @@ static const char *set_config_filename(const char *config_filename)
 	return menu_backtitle;
 }
 
+/* return = 0 means we are successful.
+ * -1 means go on doing what you were doing
+ */
 static int do_exit(void)
 {
 	int res;
@@ -642,7 +666,7 @@ static int do_exit(void)
 		return -1;
 	}
 
-	
+	/* if we got here, the user really wants to exit */
 	switch (res) {
 	case 0:
 		res = conf_write(filename);
@@ -671,6 +695,7 @@ static void search_conf(void)
 {
 	struct symbol **sym_arr;
 	struct gstr res;
+	char dialog_input_result[100];
 	char *dialog_input;
 	int dres;
 again:
@@ -678,7 +703,7 @@ again:
 			_("Search Configuration Parameter"),
 			_("Enter " CONFIG_ " (sub)string to search for "
 				"(with or without \"" CONFIG_ "\")"),
-			"", &dialog_input_result, &dialog_input_result_len);
+			"", dialog_input_result, 99);
 	switch (dres) {
 	case 0:
 		break;
@@ -690,7 +715,7 @@ again:
 		return;
 	}
 
-	
+	/* strip the prefix if necessary */
 	dialog_input = dialog_input_result;
 	if (strncasecmp(dialog_input_result, CONFIG_, strlen(CONFIG_)) == 0)
 		dialog_input += strlen(CONFIG_);
@@ -896,6 +921,8 @@ static void reset_menu(void)
 	clean_items();
 }
 
+/* adjust the menu to show this item.
+ * prefer not to scroll the menu if possible*/
 static void center_item(int selected_index, int *last_top_row)
 {
 	int toprow;
@@ -916,6 +943,7 @@ static void center_item(int selected_index, int *last_top_row)
 	refresh_all_windows(main_window);
 }
 
+/* this function assumes reset_menu has been called before */
 static void show_menu(const char *prompt, const char *instructions,
 		int selected_index, int *last_top_row)
 {
@@ -938,7 +966,7 @@ static void show_menu(const char *prompt, const char *instructions,
 
 	set_menu_items(curses_menu, curses_menu_items);
 
-	
+	/* position the menu at the middle of the screen */
 	scale_menu(curses_menu, &maxy, &maxx);
 	maxx = min(maxx, mwin_max_cols-2);
 	maxy = mwin_max_lines;
@@ -951,13 +979,16 @@ static void show_menu(const char *prompt, const char *instructions,
 	set_menu_win(curses_menu, menu_window);
 	set_menu_sub(curses_menu, menu_window);
 
+	/* must reassert this after changing items, otherwise returns to a
+	 * default of 16
+	 */
 	set_menu_format(curses_menu, maxy, 1);
 	center_item(selected_index, last_top_row);
 	set_menu_format(curses_menu, maxy, 1);
 
 	print_function_line();
 
-	
+	/* Post the menu */
 	post_menu(curses_menu);
 	refresh_all_windows(main_window);
 }
@@ -970,7 +1001,7 @@ static void adj_match_dir(match_f *match_direction)
 	else if (*match_direction == FIND_NEXT_MATCH_UP)
 		*match_direction =
 			MATCH_TINKER_PATTERN_UP;
-	
+	/* else, do no change.. */
 }
 
 struct match_state
@@ -980,6 +1011,10 @@ struct match_state
 	char pattern[256];
 };
 
+/* Return 0 means I have handled the key. In such a case, ans should hold the
+ * item to center, or -1 otherwise.
+ * Else return -1 .
+ */
 static int do_match(int key, struct match_state *state, int *ans)
 {
 	char c = (char) key;
@@ -1032,6 +1067,7 @@ static void conf(struct menu *menu)
 	struct menu *submenu = 0;
 	const char *prompt = menu_get_prompt(menu);
 	struct symbol *sym;
+	struct menu *active_menu = NULL;
 	int res;
 	int current_index = 0;
 	int last_top_row = 0;
@@ -1104,11 +1140,11 @@ static void conf(struct menu *menu)
 		}
 
 		refresh_all_windows(main_window);
-		
+		/* if ESC or left*/
 		if (res == 27 || (menu != &rootmenu && res == KEY_LEFT))
 			break;
 
-		
+		/* remember location in the menu */
 		last_top_row = top_row(curses_menu);
 		current_index = curses_item_index();
 
@@ -1116,9 +1152,13 @@ static void conf(struct menu *menu)
 			continue;
 
 		submenu = (struct menu *) item_data();
+		active_menu = (struct menu *)item_data();
 		if (!submenu || !menu_is_visible(submenu))
 			continue;
-		sym = submenu->sym;
+		if (submenu)
+			sym = submenu->sym;
+		else
+			sym = NULL;
 
 		switch (res) {
 		case ' ':
@@ -1128,7 +1168,7 @@ static void conf(struct menu *menu)
 				conf(submenu);
 			break;
 		case KEY_RIGHT:
-		case 10: 
+		case 10: /* ENTER WAS PRESSED */
 			switch (item_tag()) {
 			case 'm':
 				if (single_menu_mode)
@@ -1182,13 +1222,20 @@ static void conf_message_callback(const char *fmt, va_list ap)
 
 static void show_help(struct menu *menu)
 {
-	struct gstr help;
+	struct gstr help = str_new();
 
-	if (!menu)
-		return;
-
-	help = str_new();
-	menu_get_ext_help(menu, &help);
+	if (menu && menu->sym && menu_has_help(menu)) {
+		if (menu->sym->name) {
+			str_printf(&help, "%s%s:\n\n", CONFIG_, menu->sym->name);
+			str_append(&help, _(menu_get_help(menu)));
+			str_append(&help, "\n");
+			get_symbol_str(&help, menu->sym);
+		} else {
+			str_append(&help, _(menu_get_help(menu)));
+		}
+	} else {
+		str_append(&help, nohelp_text);
+	}
 	show_scroll_win(main_window, _(menu_get_prompt(menu)), str_get(&help));
 	str_free(&help);
 }
@@ -1208,7 +1255,7 @@ static void conf_choice(struct menu *menu)
 	};
 
 	active = sym_get_choice_value(menu->sym);
-	
+	/* this is mostly duplicated from the conf() function. */
 	while (!global_exit) {
 		reset_menu();
 
@@ -1286,7 +1333,7 @@ static void conf_choice(struct menu *menu)
 			}
 			refresh_all_windows(main_window);
 		}
-		
+		/* if ESC or left */
 		if (res == 27 || res == KEY_LEFT)
 			break;
 
@@ -1313,6 +1360,7 @@ static void conf_choice(struct menu *menu)
 static void conf_string(struct menu *menu)
 {
 	const char *prompt = menu_get_prompt(menu);
+	char dialog_input_result[256];
 
 	while (1) {
 		int res;
@@ -1335,8 +1383,8 @@ static void conf_string(struct menu *menu)
 				prompt ? _(prompt) : _("Main Menu"),
 				heading,
 				sym_get_string_value(menu->sym),
-				&dialog_input_result,
-				&dialog_input_result_len);
+				dialog_input_result,
+				sizeof(dialog_input_result));
 		switch (res) {
 		case 0:
 			if (sym_set_string_value(menu->sym,
@@ -1356,13 +1404,14 @@ static void conf_string(struct menu *menu)
 
 static void conf_load(void)
 {
+	char dialog_input_result[256];
 	while (1) {
 		int res;
 		res = dialog_inputbox(main_window,
 				NULL, load_config_text,
 				filename,
-				&dialog_input_result,
-				&dialog_input_result_len);
+				dialog_input_result,
+				sizeof(dialog_input_result));
 		switch (res) {
 		case 0:
 			if (!dialog_input_result[0])
@@ -1387,13 +1436,14 @@ static void conf_load(void)
 
 static void conf_save(void)
 {
+	char dialog_input_result[256];
 	while (1) {
 		int res;
 		res = dialog_inputbox(main_window,
 				NULL, save_config_text,
 				filename,
-				&dialog_input_result,
-				&dialog_input_result_len);
+				dialog_input_result,
+				sizeof(dialog_input_result));
 		switch (res) {
 		case 0:
 			if (!dialog_input_result[0])
@@ -1423,13 +1473,13 @@ void setup_windows(void)
 	if (main_window != NULL)
 		delwin(main_window);
 
-	
+	/* set up the menu and menu window */
 	main_window = newwin(LINES-2, COLS-2, 2, 1);
 	keypad(main_window, TRUE);
 	mwin_max_lines = LINES-7;
 	mwin_max_cols = COLS-6;
 
-	
+	/* panels order is from bottom to top */
 	new_panel(main_window);
 }
 
@@ -1450,9 +1500,9 @@ int main(int ac, char **av)
 			single_menu_mode = 1;
 	}
 
-	
+	/* Initialize curses */
 	initscr();
-	
+	/* set color theme */
 	set_colors();
 
 	cbreak();
@@ -1470,7 +1520,7 @@ int main(int ac, char **av)
 	notimeout(stdscr, FALSE);
 	ESCDELAY = 1;
 
-	
+	/* set btns menu */
 	curses_menu = new_menu(curses_menu_items);
 	menu_opts_off(curses_menu, O_SHOWDESC);
 	menu_opts_on(curses_menu, O_SHOWMATCH);
@@ -1485,7 +1535,7 @@ int main(int ac, char **av)
 	set_config_filename(conf_get_configname());
 	setup_windows();
 
-	
+	/* check for KEY_FUNC(1) */
 	if (has_key(KEY_F(1)) == FALSE) {
 		show_scroll_win(main_window,
 				_("Instructions"),
@@ -1493,13 +1543,13 @@ int main(int ac, char **av)
 	}
 
 	conf_set_message_callback(conf_message_callback);
-	
+	/* do the work */
 	while (!global_exit) {
 		conf(&rootmenu);
 		if (!global_exit && do_exit() == 0)
 			break;
 	}
-	
+	/* ok, we are done */
 	unpost_menu(curses_menu);
 	free_menu(curses_menu);
 	delwin(main_window);

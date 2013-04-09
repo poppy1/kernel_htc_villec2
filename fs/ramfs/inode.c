@@ -8,7 +8,22 @@
  * This file is released under the GPL.
  */
 
+/*
+ * NOTE! This filesystem is probably most useful
+ * not as a real filesystem, but as an example of
+ * how virtual filesystems can be written.
+ *
+ * It doesn't get much simpler than this. Consider
+ * that this file implements the full semantics of
+ * a POSIX-compliant read-write filesystem.
+ *
+ * Note in particular how the filesystem does not
+ * need to implement any data structures of its own
+ * to keep track of the virtual data: using the VFS
+ * caches is sufficient.
+ */
 
+#include <linux/module.h>
 #include <linux/fs.h>
 #include <linux/pagemap.h>
 #include <linux/highmem.h>
@@ -31,14 +46,14 @@ static const struct inode_operations ramfs_dir_inode_operations;
 
 static struct backing_dev_info ramfs_backing_dev_info = {
 	.name		= "ramfs",
-	.ra_pages	= 0,	
+	.ra_pages	= 0,	/* No readahead */
 	.capabilities	= BDI_CAP_NO_ACCT_AND_WRITEBACK |
 			  BDI_CAP_MAP_DIRECT | BDI_CAP_MAP_COPY |
 			  BDI_CAP_READ_MAP | BDI_CAP_WRITE_MAP | BDI_CAP_EXEC_MAP,
 };
 
 struct inode *ramfs_get_inode(struct super_block *sb,
-				const struct inode *dir, umode_t mode, dev_t dev)
+				const struct inode *dir, int mode, dev_t dev)
 {
 	struct inode * inode = new_inode(sb);
 
@@ -62,7 +77,7 @@ struct inode *ramfs_get_inode(struct super_block *sb,
 			inode->i_op = &ramfs_dir_inode_operations;
 			inode->i_fop = &simple_dir_operations;
 
-			
+			/* directory inodes start off with i_nlink == 2 (for "." entry) */
 			inc_nlink(inode);
 			break;
 		case S_IFLNK:
@@ -73,22 +88,26 @@ struct inode *ramfs_get_inode(struct super_block *sb,
 	return inode;
 }
 
+/*
+ * File creation. Allocate an inode, and we're done..
+ */
+/* SMP-safe */
 static int
-ramfs_mknod(struct inode *dir, struct dentry *dentry, umode_t mode, dev_t dev)
+ramfs_mknod(struct inode *dir, struct dentry *dentry, int mode, dev_t dev)
 {
 	struct inode * inode = ramfs_get_inode(dir->i_sb, dir, mode, dev);
 	int error = -ENOSPC;
 
 	if (inode) {
 		d_instantiate(dentry, inode);
-		dget(dentry);	
+		dget(dentry);	/* Extra count - pin the dentry in core */
 		error = 0;
 		dir->i_mtime = dir->i_ctime = CURRENT_TIME;
 	}
 	return error;
 }
 
-static int ramfs_mkdir(struct inode * dir, struct dentry * dentry, umode_t mode)
+static int ramfs_mkdir(struct inode * dir, struct dentry * dentry, int mode)
 {
 	int retval = ramfs_mknod(dir, dentry, mode | S_IFDIR, 0);
 	if (!retval)
@@ -96,7 +115,7 @@ static int ramfs_mkdir(struct inode * dir, struct dentry * dentry, umode_t mode)
 	return retval;
 }
 
-static int ramfs_create(struct inode *dir, struct dentry *dentry, umode_t mode, struct nameidata *nd)
+static int ramfs_create(struct inode *dir, struct dentry *dentry, int mode, struct nameidata *nd)
 {
 	return ramfs_mknod(dir, dentry, mode | S_IFREG, 0);
 }
@@ -176,6 +195,12 @@ static int ramfs_parse_options(char *data, struct ramfs_mount_opts *opts)
 				return -EINVAL;
 			opts->mode = option & S_IALLUGO;
 			break;
+		/*
+		 * We might like to report bad mount options here;
+		 * but traditionally ramfs has ignored all mount options,
+		 * and as it is used as a !CONFIG_SHMEM simple substitute
+		 * for tmpfs, better continue to ignore other mount options.
+		 */
 		}
 	}
 
@@ -185,19 +210,22 @@ static int ramfs_parse_options(char *data, struct ramfs_mount_opts *opts)
 int ramfs_fill_super(struct super_block *sb, void *data, int silent)
 {
 	struct ramfs_fs_info *fsi;
-	struct inode *inode;
+	struct inode *inode = NULL;
+	struct dentry *root;
 	int err;
 
 	save_mount_options(sb, data);
 
 	fsi = kzalloc(sizeof(struct ramfs_fs_info), GFP_KERNEL);
 	sb->s_fs_info = fsi;
-	if (!fsi)
-		return -ENOMEM;
+	if (!fsi) {
+		err = -ENOMEM;
+		goto fail;
+	}
 
 	err = ramfs_parse_options(data, &fsi->mount_opts);
 	if (err)
-		return err;
+		goto fail;
 
 	sb->s_maxbytes		= MAX_LFS_FILESIZE;
 	sb->s_blocksize		= PAGE_CACHE_SIZE;
@@ -207,11 +235,24 @@ int ramfs_fill_super(struct super_block *sb, void *data, int silent)
 	sb->s_time_gran		= 1;
 
 	inode = ramfs_get_inode(sb, NULL, S_IFDIR | fsi->mount_opts.mode, 0);
-	sb->s_root = d_make_root(inode);
-	if (!sb->s_root)
-		return -ENOMEM;
+	if (!inode) {
+		err = -ENOMEM;
+		goto fail;
+	}
+
+	root = d_alloc_root(inode);
+	sb->s_root = root;
+	if (!root) {
+		err = -ENOMEM;
+		goto fail;
+	}
 
 	return 0;
+fail:
+	kfree(fsi);
+	sb->s_fs_info = NULL;
+	iput(inode);
+	return err;
 }
 
 struct dentry *ramfs_mount(struct file_system_type *fs_type,
@@ -247,7 +288,14 @@ static int __init init_ramfs_fs(void)
 {
 	return register_filesystem(&ramfs_fs_type);
 }
+
+static void __exit exit_ramfs_fs(void)
+{
+	unregister_filesystem(&ramfs_fs_type);
+}
+
 module_init(init_ramfs_fs)
+module_exit(exit_ramfs_fs)
 
 int __init init_rootfs(void)
 {
@@ -263,3 +311,5 @@ int __init init_rootfs(void)
 
 	return err;
 }
+
+MODULE_LICENSE("GPL");

@@ -13,16 +13,15 @@
  */
 
 #include <linux/bitrev.h>
-#include <linux/module.h>
 #include "rc-core-priv.h"
 
-#define SONY_UNIT		600000 
+#define SONY_UNIT		600000 /* ns */
 #define SONY_HEADER_PULSE	(4 * SONY_UNIT)
 #define	SONY_HEADER_SPACE	(1 * SONY_UNIT)
 #define SONY_BIT_0_PULSE	(1 * SONY_UNIT)
 #define SONY_BIT_1_PULSE	(2 * SONY_UNIT)
 #define SONY_BIT_SPACE		(1 * SONY_UNIT)
-#define SONY_TRAILER_SPACE	(10 * SONY_UNIT) 
+#define SONY_TRAILER_SPACE	(10 * SONY_UNIT) /* minimum */
 
 enum sony_state {
 	STATE_INACTIVE,
@@ -32,6 +31,13 @@ enum sony_state {
 	STATE_FINISHED,
 };
 
+/**
+ * ir_sony_decode() - Decode one Sony pulse or space
+ * @dev:	the struct rc_dev descriptor of the device
+ * @ev:         the struct ir_raw_event descriptor of the pulse/space
+ *
+ * This function returns -EINVAL if the pulse violates the state machine
+ */
 static int ir_sony_decode(struct rc_dev *dev, struct ir_raw_event ev)
 {
 	struct sony_dec *data = &dev->raw->sony;
@@ -105,7 +111,7 @@ static int ir_sony_decode(struct rc_dev *dev, struct ir_raw_event ev)
 		}
 
 		data->state = STATE_FINISHED;
-		
+		/* Fall through */
 
 	case STATE_FINISHED:
 		if (ev.pulse)
@@ -123,7 +129,7 @@ static int ir_sony_decode(struct rc_dev *dev, struct ir_raw_event ev)
 		case 15:
 			device    = bitrev8((data->bits >>  0) & 0xFF);
 			subdevice = 0;
-			function  = bitrev8((data->bits >>  7) & 0xFE);
+			function  = bitrev8((data->bits >>  7) & 0xFD);
 			break;
 		case 20:
 			device    = bitrev8((data->bits >>  5) & 0xF8);

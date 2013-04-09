@@ -38,13 +38,18 @@ void vcd_do_device_state_transition(struct vcd_drv_ctxt *drv_ctxt,
 				  drv_ctxt, to_state);
 	}
 
+	if (!drv_ctxt)
+		return;
+
 	state_ctxt = &drv_ctxt->dev_state;
 
-	if (state_ctxt->state == to_state) {
-		VCD_MSG_HIGH("Device already in requested to_state=%d",
-				 to_state);
-
-		return;
+	/* HTC_START (klockwork issue)*/
+	if (state_ctxt->state) {
+		if (state_ctxt->state == to_state) {
+			VCD_MSG_HIGH("Device already in requested to_state=%d",
+					to_state);
+		    return;
+        }
 	}
 
 	VCD_MSG_MED("vcd_do_device_state_transition: D%d -> D%d, for api %d",
@@ -129,16 +134,10 @@ void vcd_ddl_callback(u32 event, u32 status, void *payload,
 		{
 			transc = (struct vcd_transc *)client_data;
 
-			if (!transc || !transc->in_use || !transc->cctxt) {
+			if (!transc || !transc->in_use
+				|| !transc->cctxt) {
 				VCD_MSG_ERROR("Invalid clientdata "
-					"received from DDL, transc = 0x%x\n",
-					(u32)transc);
-				if (transc) {
-					VCD_MSG_ERROR("transc->in_use = %u, "
-						"transc->cctxt = 0x%x\n",
-						transc->in_use,
-						(u32)transc->cctxt);
-				}
+							  "received from DDL ");
 			} else {
 				cctxt = transc->cctxt;
 
@@ -219,7 +218,6 @@ u32 vcd_init_device_context(struct vcd_drv_ctxt *drv_ctxt,
 						   VCD_DEVICE_STATE_INITING,
 						   ev_code);
 	}
-	dev_ctxt->turbo_mode_set = 0;
 
 	return rc;
 }
@@ -327,7 +325,7 @@ u32 vcd_reset_device_context(struct vcd_drv_ctxt *drv_ctxt,
 		VCD_MSG_HIGH("HW Reset done");
 	} else {
 		VCD_MSG_FATAL("HW Reset failed");
-	}
+		}
 	(void)vcd_power_event(dev_ctxt, NULL, VCD_EVT_PWR_DEV_TERM_END);
 
 	return VCD_S_SUCCESS;
@@ -537,12 +535,12 @@ static u32 vcd_init_cmn
 	*driver_handle = 0;
 
 	driver_id = 0;
-	while (driver_id < VCD_DRIVER_CLIENTS_MAX &&
+	while (driver_id < VCD_DRIVER_INSTANCE_MAX &&
 		   dev_ctxt->driver_ids[driver_id]) {
 		++driver_id;
 	}
 
-	if (driver_id == VCD_DRIVER_CLIENTS_MAX) {
+	if (driver_id == VCD_DRIVER_INSTANCE_MAX) {
 		VCD_MSG_ERROR("Max driver instances reached");
 
 		return VCD_ERR_FAIL;
@@ -759,7 +757,6 @@ static u32 vcd_open_cmn
 	client = dev_ctxt->cctxt_list_head;
 	dev_ctxt->cctxt_list_head = cctxt;
 	cctxt->next = client;
-	dev_ctxt->turbo_mode_set = 0;
 
 	*clnt_cctxt = cctxt;
 
@@ -858,7 +855,7 @@ static u32 vcd_close_in_ready
 	} else {
 		VCD_MSG_ERROR("Unsupported API in client state %d",
 				  cctxt->clnt_state.state);
-		vcd_destroy_client_context(cctxt);
+
 		rc = VCD_ERR_BAD_STATE;
 	}
 
@@ -962,9 +959,6 @@ static void vcd_dev_cb_in_initing
 	u32 rc = VCD_S_SUCCESS;
 	u32 client_inited = false;
 	u32 fail_all_open = false;
-	struct ddl_context *ddl_context;
-
-	ddl_context = ddl_get_context();
 
 	VCD_MSG_LOW("vcd_dev_cb_in_initing:");
 
@@ -1038,8 +1032,6 @@ static void vcd_dev_cb_in_initing
 
 			tmp_client = client;
 			client = client->next;
-			if (tmp_client == dev_ctxt->cctxt_list_head)
-				fail_all_open = true;
 
 			vcd_destroy_client_context(tmp_client);
 		}
@@ -1048,10 +1040,6 @@ static void vcd_dev_cb_in_initing
 	if (!client_inited || fail_all_open) {
 		VCD_MSG_ERROR("All client open requests failed");
 
-		DDL_IDLE(ddl_context);
-
-		vcd_handle_device_init_failed(drv_ctxt,
-			DEVICE_STATE_EVENT_NUMBER(close));
 		dev_ctxt->pending_cmd = VCD_CMD_DEVICE_TERM;
 	} else {
 		if (vcd_power_event(dev_ctxt, NULL,
@@ -1070,7 +1058,7 @@ static void  vcd_hw_timeout_cmn(struct vcd_drv_ctxt *drv_ctxt,
 
 	vcd_handle_device_err_fatal(dev_ctxt, NULL);
 
-	
+	/* Reset HW. */
 	(void) vcd_reset_device_context(drv_ctxt,
 		DEVICE_STATE_EVENT_NUMBER(timeout));
 }

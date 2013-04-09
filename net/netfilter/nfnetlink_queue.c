@@ -31,7 +31,7 @@
 #include <net/sock.h>
 #include <net/netfilter/nf_queue.h>
 
-#include <linux/atomic.h>
+#include <asm/atomic.h>
 
 #ifdef CONFIG_BRIDGE_NETFILTER
 #include "../bridge/br_private.h"
@@ -40,7 +40,7 @@
 #define NFQNL_QMAX_DEFAULT 1024
 
 struct nfqnl_instance {
-	struct hlist_node hlist;		
+	struct hlist_node hlist;		/* global list of queues */
 	struct rcu_head rcu;
 
 	int peer_pid;
@@ -50,12 +50,16 @@ struct nfqnl_instance {
 	unsigned int queue_user_dropped;
 
 
-	u_int16_t queue_num;			
+	u_int16_t queue_num;			/* number of this queue */
 	u_int8_t copy_mode;
+/*
+ * Following fields are dirtied for each queued packet,
+ * keep them in same cache line if possible.
+ */
 	spinlock_t	lock;
 	unsigned int	queue_total;
-	unsigned int	id_sequence;		
-	struct list_head queue_list;		
+	atomic_t	id_sequence;		/* 'sequence' of pkt ids */
+	struct list_head queue_list;		/* packets in queue */
 };
 
 typedef int (*nfqnl_cmpfn)(struct nf_queue_entry *, unsigned long);
@@ -167,13 +171,6 @@ __enqueue_entry(struct nfqnl_instance *queue, struct nf_queue_entry *entry)
        queue->queue_total++;
 }
 
-static void
-__dequeue_entry(struct nfqnl_instance *queue, struct nf_queue_entry *entry)
-{
-	list_del(&entry->list);
-	queue->queue_total--;
-}
-
 static struct nf_queue_entry *
 find_dequeue_entry(struct nfqnl_instance *queue, unsigned int id)
 {
@@ -188,8 +185,10 @@ find_dequeue_entry(struct nfqnl_instance *queue, unsigned int id)
 		}
 	}
 
-	if (entry)
-		__dequeue_entry(queue, entry);
+	if (entry) {
+		list_del(&entry->list);
+		queue->queue_total--;
+	}
 
 	spin_unlock_bh(&queue->lock);
 
@@ -214,15 +213,13 @@ nfqnl_flush(struct nfqnl_instance *queue, nfqnl_cmpfn cmpfn, unsigned long data)
 
 static struct sk_buff *
 nfqnl_build_packet_message(struct nfqnl_instance *queue,
-			   struct nf_queue_entry *entry,
-			   __be32 **packet_id_ptr)
+			   struct nf_queue_entry *entry)
 {
 	sk_buff_data_t old_tail;
 	size_t size;
 	size_t data_len = 0;
 	struct sk_buff *skb;
-	struct nlattr *nla;
-	struct nfqnl_msg_packet_hdr *pmsg;
+	struct nfqnl_msg_packet_hdr pmsg;
 	struct nlmsghdr *nlh;
 	struct nfgenmsg *nfmsg;
 	struct sk_buff *entskb = entry->skb;
@@ -231,13 +228,13 @@ nfqnl_build_packet_message(struct nfqnl_instance *queue,
 
 	size =    NLMSG_SPACE(sizeof(struct nfgenmsg))
 		+ nla_total_size(sizeof(struct nfqnl_msg_packet_hdr))
-		+ nla_total_size(sizeof(u_int32_t))	
-		+ nla_total_size(sizeof(u_int32_t))	
+		+ nla_total_size(sizeof(u_int32_t))	/* ifindex */
+		+ nla_total_size(sizeof(u_int32_t))	/* ifindex */
 #ifdef CONFIG_BRIDGE_NETFILTER
-		+ nla_total_size(sizeof(u_int32_t))	
-		+ nla_total_size(sizeof(u_int32_t))	
+		+ nla_total_size(sizeof(u_int32_t))	/* ifindex */
+		+ nla_total_size(sizeof(u_int32_t))	/* ifindex */
 #endif
-		+ nla_total_size(sizeof(u_int32_t))	
+		+ nla_total_size(sizeof(u_int32_t))	/* mark */
 		+ nla_total_size(sizeof(struct nfqnl_msg_packet_hw))
 		+ nla_total_size(sizeof(struct nfqnl_msg_packet_timestamp));
 
@@ -275,11 +272,12 @@ nfqnl_build_packet_message(struct nfqnl_instance *queue,
 	nfmsg->version = NFNETLINK_V0;
 	nfmsg->res_id = htons(queue->queue_num);
 
-	nla = __nla_reserve(skb, NFQA_PACKET_HDR, sizeof(*pmsg));
-	pmsg = nla_data(nla);
-	pmsg->hw_protocol	= entskb->protocol;
-	pmsg->hook		= entry->hook;
-	*packet_id_ptr		= &pmsg->packet_id;
+	entry->id = atomic_inc_return(&queue->id_sequence);
+	pmsg.packet_id 		= htonl(entry->id);
+	pmsg.hw_protocol	= entskb->protocol;
+	pmsg.hook		= entry->hook;
+
+	NLA_PUT(skb, NFQA_PACKET_HDR, sizeof(pmsg), &pmsg);
 
 	indev = entry->indev;
 	if (indev) {
@@ -287,13 +285,18 @@ nfqnl_build_packet_message(struct nfqnl_instance *queue,
 		NLA_PUT_BE32(skb, NFQA_IFINDEX_INDEV, htonl(indev->ifindex));
 #else
 		if (entry->pf == PF_BRIDGE) {
+			/* Case 1: indev is physical input device, we need to
+			 * look for bridge group (when called from
+			 * netfilter_bridge) */
 			NLA_PUT_BE32(skb, NFQA_IFINDEX_PHYSINDEV,
 				     htonl(indev->ifindex));
-			
-			
+			/* this is the bridge group "brX" */
+			/* rcu_read_lock()ed by __nf_queue */
 			NLA_PUT_BE32(skb, NFQA_IFINDEX_INDEV,
 				     htonl(br_port_get_rcu(indev)->br->dev->ifindex));
 		} else {
+			/* Case 2: indev is bridge group, we need to look for
+			 * physical device (when called from ipv4) */
 			NLA_PUT_BE32(skb, NFQA_IFINDEX_INDEV,
 				     htonl(indev->ifindex));
 			if (entskb->nf_bridge && entskb->nf_bridge->physindev)
@@ -308,13 +311,18 @@ nfqnl_build_packet_message(struct nfqnl_instance *queue,
 		NLA_PUT_BE32(skb, NFQA_IFINDEX_OUTDEV, htonl(outdev->ifindex));
 #else
 		if (entry->pf == PF_BRIDGE) {
+			/* Case 1: outdev is physical output device, we need to
+			 * look for bridge group (when called from
+			 * netfilter_bridge) */
 			NLA_PUT_BE32(skb, NFQA_IFINDEX_PHYSOUTDEV,
 				     htonl(outdev->ifindex));
-			
-			
+			/* this is the bridge group "brX" */
+			/* rcu_read_lock()ed by __nf_queue */
 			NLA_PUT_BE32(skb, NFQA_IFINDEX_OUTDEV,
 				     htonl(br_port_get_rcu(outdev)->br->dev->ifindex));
 		} else {
+			/* Case 2: outdev is bridge group, we need to look for
+			 * physical output device (when called from ipv4) */
 			NLA_PUT_BE32(skb, NFQA_IFINDEX_OUTDEV,
 				     htonl(outdev->ifindex));
 			if (entskb->nf_bridge && entskb->nf_bridge->physoutdev)
@@ -381,9 +389,8 @@ nfqnl_enqueue_packet(struct nf_queue_entry *entry, unsigned int queuenum)
 	struct sk_buff *nskb;
 	struct nfqnl_instance *queue;
 	int err = -ENOBUFS;
-	__be32 *packet_id_ptr;
 
-	
+	/* rcu_read_lock()ed by nf_hook_slow() */
 	queue = instance_lookup(queuenum);
 	if (!queue) {
 		err = -ESRCH;
@@ -395,7 +402,7 @@ nfqnl_enqueue_packet(struct nf_queue_entry *entry, unsigned int queuenum)
 		goto err_out;
 	}
 
-	nskb = nfqnl_build_packet_message(queue, entry, &packet_id_ptr);
+	nskb = nfqnl_build_packet_message(queue, entry);
 	if (nskb == NULL) {
 		err = -ENOMEM;
 		goto err_out;
@@ -414,10 +421,8 @@ nfqnl_enqueue_packet(struct nf_queue_entry *entry, unsigned int queuenum)
 				 queue->queue_total);
 		goto err_out_free_nskb;
 	}
-	entry->id = ++queue->id_sequence;
-	*packet_id_ptr = htonl(entry->id);
 
-	
+	/* nfnetlink_unicast will either free the nskb or add it to a socket */
 	err = nfnetlink_unicast(nskb, &init_net, queue->peer_pid, MSG_DONTWAIT);
 	if (err < 0) {
 		queue->queue_user_dropped++;
@@ -486,7 +491,7 @@ nfqnl_set_mode(struct nfqnl_instance *queue,
 
 	case NFQNL_COPY_PACKET:
 		queue->copy_mode = mode;
-		
+		/* we're using struct nlattr which has 16bit nla_len */
 		if (range > 0xffff)
 			queue->copy_range = 0xffff;
 		else
@@ -524,6 +529,8 @@ dev_cmp(struct nf_queue_entry *entry, unsigned long ifindex)
 	return 0;
 }
 
+/* drop all packets with either indev or outdev == ifindex from all queue
+ * instances */
 static void
 nfqnl_dev_drop(int ifindex)
 {
@@ -554,7 +561,7 @@ nfqnl_rcv_dev_event(struct notifier_block *this,
 	if (!net_eq(dev_net(dev), &init_net))
 		return NOTIFY_DONE;
 
-	
+	/* Drop any packets associated with the downed device */
 	if (event == NETDEV_DOWN)
 		nfqnl_dev_drop(dev->ifindex);
 	return NOTIFY_DONE;
@@ -573,7 +580,7 @@ nfqnl_rcv_nl_event(struct notifier_block *this,
 	if (event == NETLINK_URELEASE && n->protocol == NETLINK_NETFILTER) {
 		int i;
 
-		
+		/* destroy all instances for this pid */
 		spin_lock(&instances_lock);
 		for (i = 0; i < INSTANCE_BUCKETS; i++) {
 			struct hlist_node *tmp, *t2;
@@ -601,92 +608,6 @@ static const struct nla_policy nfqa_verdict_policy[NFQA_MAX+1] = {
 	[NFQA_PAYLOAD]		= { .type = NLA_UNSPEC },
 };
 
-static const struct nla_policy nfqa_verdict_batch_policy[NFQA_MAX+1] = {
-	[NFQA_VERDICT_HDR]	= { .len = sizeof(struct nfqnl_msg_verdict_hdr) },
-	[NFQA_MARK]		= { .type = NLA_U32 },
-};
-
-static struct nfqnl_instance *verdict_instance_lookup(u16 queue_num, int nlpid)
-{
-	struct nfqnl_instance *queue;
-
-	queue = instance_lookup(queue_num);
-	if (!queue)
-		return ERR_PTR(-ENODEV);
-
-	if (queue->peer_pid != nlpid)
-		return ERR_PTR(-EPERM);
-
-	return queue;
-}
-
-static struct nfqnl_msg_verdict_hdr*
-verdicthdr_get(const struct nlattr * const nfqa[])
-{
-	struct nfqnl_msg_verdict_hdr *vhdr;
-	unsigned int verdict;
-
-	if (!nfqa[NFQA_VERDICT_HDR])
-		return NULL;
-
-	vhdr = nla_data(nfqa[NFQA_VERDICT_HDR]);
-	verdict = ntohl(vhdr->verdict) & NF_VERDICT_MASK;
-	if (verdict > NF_MAX_VERDICT || verdict == NF_STOLEN)
-		return NULL;
-	return vhdr;
-}
-
-static int nfq_id_after(unsigned int id, unsigned int max)
-{
-	return (int)(id - max) > 0;
-}
-
-static int
-nfqnl_recv_verdict_batch(struct sock *ctnl, struct sk_buff *skb,
-		   const struct nlmsghdr *nlh,
-		   const struct nlattr * const nfqa[])
-{
-	struct nfgenmsg *nfmsg = NLMSG_DATA(nlh);
-	struct nf_queue_entry *entry, *tmp;
-	unsigned int verdict, maxid;
-	struct nfqnl_msg_verdict_hdr *vhdr;
-	struct nfqnl_instance *queue;
-	LIST_HEAD(batch_list);
-	u16 queue_num = ntohs(nfmsg->res_id);
-
-	queue = verdict_instance_lookup(queue_num, NETLINK_CB(skb).pid);
-	if (IS_ERR(queue))
-		return PTR_ERR(queue);
-
-	vhdr = verdicthdr_get(nfqa);
-	if (!vhdr)
-		return -EINVAL;
-
-	verdict = ntohl(vhdr->verdict);
-	maxid = ntohl(vhdr->id);
-
-	spin_lock_bh(&queue->lock);
-
-	list_for_each_entry_safe(entry, tmp, &queue->queue_list, list) {
-		if (nfq_id_after(entry->id, maxid))
-			break;
-		__dequeue_entry(queue, entry);
-		list_add_tail(&entry->list, &batch_list);
-	}
-
-	spin_unlock_bh(&queue->lock);
-
-	if (list_empty(&batch_list))
-		return -ENOENT;
-
-	list_for_each_entry_safe(entry, tmp, &batch_list, list) {
-		if (nfqa[NFQA_MARK])
-			entry->skb->mark = ntohl(nla_get_be32(nfqa[NFQA_MARK]));
-		nf_reinject(entry, verdict);
-	}
-	return 0;
-}
-
 static int
 nfqnl_recv_verdict(struct sock *ctnl, struct sk_buff *skb,
 		   const struct nlmsghdr *nlh,
@@ -699,23 +620,39 @@ nfqnl_recv_verdict(struct sock *ctnl, struct sk_buff *skb,
 	struct nfqnl_instance *queue;
 	unsigned int verdict;
 	struct nf_queue_entry *entry;
+	int err;
 
+	rcu_read_lock();
 	queue = instance_lookup(queue_num);
-	if (!queue)
+	if (!queue) {
+		err = -ENODEV;
+		goto err_out_unlock;
+	}
 
-	queue = verdict_instance_lookup(queue_num, NETLINK_CB(skb).pid);
-	if (IS_ERR(queue))
-		return PTR_ERR(queue);
+	if (queue->peer_pid != NETLINK_CB(skb).pid) {
+		err = -EPERM;
+		goto err_out_unlock;
+	}
 
-	vhdr = verdicthdr_get(nfqa);
-	if (!vhdr)
-		return -EINVAL;
+	if (!nfqa[NFQA_VERDICT_HDR]) {
+		err = -EINVAL;
+		goto err_out_unlock;
+	}
 
+	vhdr = nla_data(nfqa[NFQA_VERDICT_HDR]);
 	verdict = ntohl(vhdr->verdict);
 
+	if ((verdict & NF_VERDICT_MASK) > NF_MAX_VERDICT) {
+		err = -EINVAL;
+		goto err_out_unlock;
+	}
+
 	entry = find_dequeue_entry(queue, ntohl(vhdr->id));
-	if (entry == NULL)
-		return -ENOENT;
+	if (entry == NULL) {
+		err = -ENOENT;
+		goto err_out_unlock;
+	}
+	rcu_read_unlock();
 
 	if (nfqa[NFQA_PAYLOAD]) {
 		if (nfqnl_mangle(nla_data(nfqa[NFQA_PAYLOAD]),
@@ -728,6 +665,10 @@ nfqnl_recv_verdict(struct sock *ctnl, struct sk_buff *skb,
 
 	nf_reinject(entry, verdict);
 	return 0;
+
+err_out_unlock:
+	rcu_read_unlock();
+	return err;
 }
 
 static int
@@ -762,7 +703,7 @@ nfqnl_recv_config(struct sock *ctnl, struct sk_buff *skb,
 	if (nfqa[NFQA_CFG_CMD]) {
 		cmd = nla_data(nfqa[NFQA_CFG_CMD]);
 
-		
+		/* Commands without queue context - might sleep */
 		switch (cmd->command) {
 		case NFQNL_CFG_CMD_PF_BIND:
 			return nf_register_queue_handler(ntohs(cmd->pf),
@@ -840,17 +781,14 @@ err_out_unlock:
 }
 
 static const struct nfnl_callback nfqnl_cb[NFQNL_MSG_MAX] = {
-	[NFQNL_MSG_PACKET]	= { .call_rcu = nfqnl_recv_unsupp,
+	[NFQNL_MSG_PACKET]	= { .call = nfqnl_recv_unsupp,
 				    .attr_count = NFQA_MAX, },
-	[NFQNL_MSG_VERDICT]	= { .call_rcu = nfqnl_recv_verdict,
+	[NFQNL_MSG_VERDICT]	= { .call = nfqnl_recv_verdict,
 				    .attr_count = NFQA_MAX,
 				    .policy = nfqa_verdict_policy },
 	[NFQNL_MSG_CONFIG]	= { .call = nfqnl_recv_config,
 				    .attr_count = NFQA_CFG_MAX,
 				    .policy = nfqa_cfg_policy },
-	[NFQNL_MSG_VERDICT_BATCH]={ .call_rcu = nfqnl_recv_verdict_batch,
-				    .attr_count = NFQA_MAX,
-				    .policy = nfqa_verdict_batch_policy },
 };
 
 static const struct nfnetlink_subsystem nfqnl_subsys = {
@@ -932,7 +870,7 @@ static int seq_show(struct seq_file *s, void *v)
 			  inst->peer_pid, inst->queue_total,
 			  inst->copy_mode, inst->copy_range,
 			  inst->queue_dropped, inst->queue_user_dropped,
-			  inst->id_sequence, 1);
+			  atomic_read(&inst->id_sequence), 1);
 }
 
 static const struct seq_operations nfqnl_seq_ops = {
@@ -956,7 +894,7 @@ static const struct file_operations nfqnl_file_ops = {
 	.release = seq_release_private,
 };
 
-#endif 
+#endif /* PROC_FS */
 
 static int __init nfnetlink_queue_init(void)
 {
@@ -1000,7 +938,7 @@ static void __exit nfnetlink_queue_fini(void)
 	nfnetlink_subsys_unregister(&nfqnl_subsys);
 	netlink_unregister_notifier(&nfqnl_rtnl_notifier);
 
-	rcu_barrier(); 
+	rcu_barrier(); /* Wait for completion of call_rcu()'s */
 }
 
 MODULE_DESCRIPTION("netfilter packet queue handler");

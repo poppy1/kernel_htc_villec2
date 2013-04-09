@@ -33,6 +33,10 @@ static void xfrm6_beet_make_header(struct sk_buff *skb)
 	iph->hop_limit = XFRM_MODE_SKB_CB(skb)->ttl;
 }
 
+/* Add encapsulation header.
+ *
+ * The top IP header will be constructed per draft-nikander-esp-beet-mode-06.txt.
+ */
 static int xfrm6_beet_output(struct xfrm_state *x, struct sk_buff *skb)
 {
 	struct ipv6hdr *top_iph;
@@ -68,14 +72,15 @@ static int xfrm6_beet_output(struct xfrm_state *x, struct sk_buff *skb)
 		top_iph->nexthdr = IPPROTO_BEETPH;
 	}
 
-	top_iph->saddr = *(struct in6_addr *)&x->props.saddr;
-	top_iph->daddr = *(struct in6_addr *)&x->id.daddr;
+	ipv6_addr_copy(&top_iph->saddr, (struct in6_addr *)&x->props.saddr);
+	ipv6_addr_copy(&top_iph->daddr, (struct in6_addr *)&x->id.daddr);
 	return 0;
 }
 
 static int xfrm6_beet_input(struct xfrm_state *x, struct sk_buff *skb)
 {
 	struct ipv6hdr *ip6h;
+	const unsigned char *old_mac;
 	int size = sizeof(struct ipv6hdr);
 	int err;
 
@@ -85,14 +90,17 @@ static int xfrm6_beet_input(struct xfrm_state *x, struct sk_buff *skb)
 
 	__skb_push(skb, size);
 	skb_reset_network_header(skb);
-	skb_mac_header_rebuild(skb);
+
+	old_mac = skb_mac_header(skb);
+	skb_set_mac_header(skb, -skb->mac_len);
+	memmove(skb_mac_header(skb), old_mac, skb->mac_len);
 
 	xfrm6_beet_make_header(skb);
 
 	ip6h = ipv6_hdr(skb);
 	ip6h->payload_len = htons(skb->len - size);
-	ip6h->daddr = *(struct in6_addr *)&x->sel.daddr.a6;
-	ip6h->saddr = *(struct in6_addr *)&x->sel.saddr.a6;
+	ipv6_addr_copy(&ip6h->daddr, (struct in6_addr *) &x->sel.daddr.a6);
+	ipv6_addr_copy(&ip6h->saddr, (struct in6_addr *) &x->sel.saddr.a6);
 	err = 0;
 out:
 	return err;

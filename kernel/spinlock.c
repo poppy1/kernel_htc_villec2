@@ -19,16 +19,30 @@
 #include <linux/spinlock.h>
 #include <linux/interrupt.h>
 #include <linux/debug_locks.h>
-#include <linux/export.h>
+#include <linux/module.h>
 
-#ifdef CONFIG_TRACING_SPINLOCK
-#include <linux/irq.h>
-#endif
-
+/*
+ * If lockdep is enabled then we use the non-preemption spin-ops
+ * even on CONFIG_PREEMPT, because lockdep assumes that interrupts are
+ * not re-enabled during lock-acquire (which the preempt-spin-ops do):
+ */
 #if !defined(CONFIG_GENERIC_LOCKBREAK) || defined(CONFIG_DEBUG_LOCK_ALLOC)
+/*
+ * The __lock_function inlines are taken from
+ * include/linux/spinlock_api_smp.h
+ */
 #else
 #define raw_read_can_lock(l)	read_can_lock(l)
 #define raw_write_can_lock(l)	write_can_lock(l)
+/*
+ * We build the __lock_function inlines here. They are too large for
+ * inlining all over the place, but here is only one user per function
+ * which embedds them into the calling _lock_function below.
+ *
+ * This could be a long-held lock. We both prepare to spin for a long
+ * time (making _this_ CPU preemptable if possible), and we also signal
+ * towards that other CPU that it should break the lock ASAP.
+ */
 #define BUILD_LOCK_OPS(op, locktype)					\
 void __lockfunc __raw_##op##_lock(locktype##_t *lock)			\
 {									\
@@ -64,12 +78,6 @@ unsigned long __lockfunc __raw_##op##_lock_irqsave(locktype##_t *lock)	\
 			arch_##op##_relax(&lock->raw_lock);		\
 	}								\
 	(lock)->break_lock = 0;						\
-#ifdef CONFIG_TRACING_SPINLOCK
-       if (spin_locking_flag) {        \
-              spin_locking_flag[smp_processor_id()] = 1;      \
-              mb();   \
-       }       \
-#endif
 	return flags;							\
 }									\
 									\
@@ -82,16 +90,25 @@ void __lockfunc __raw_##op##_lock_bh(locktype##_t *lock)		\
 {									\
 	unsigned long flags;						\
 									\
-		\
-		\
-		\
-		\
-									\
+	/*							*/	\
+	/* Careful: we must exclude softirqs too, hence the	*/	\
+	/* irq-disabling. We use the generic preemption-aware	*/	\
+	/* function:						*/	\
+	/**/								\
 	flags = _raw_##op##_lock_irqsave(lock);				\
 	local_bh_disable();						\
 	local_irq_restore(flags);					\
 }									\
 
+/*
+ * Build preemption-friendly versions of the following
+ * lock-spinning functions:
+ *
+ *         __[spin|read|write]_lock()
+ *         __[spin|read|write]_lock_irq()
+ *         __[spin|read|write]_lock_irqsave()
+ *         __[spin|read|write]_lock_bh()
+ */
 BUILD_LOCK_OPS(spin, raw_spinlock);
 BUILD_LOCK_OPS(read, rwlock);
 BUILD_LOCK_OPS(write, rwlock);
@@ -146,7 +163,7 @@ void __lockfunc _raw_spin_lock_bh(raw_spinlock_t *lock)
 EXPORT_SYMBOL(_raw_spin_lock_bh);
 #endif
 
-#ifdef CONFIG_UNINLINE_SPIN_UNLOCK
+#ifndef CONFIG_INLINE_SPIN_UNLOCK
 void __lockfunc _raw_spin_unlock(raw_spinlock_t *lock)
 {
 	__raw_spin_unlock(lock);
@@ -158,12 +175,6 @@ EXPORT_SYMBOL(_raw_spin_unlock);
 void __lockfunc _raw_spin_unlock_irqrestore(raw_spinlock_t *lock, unsigned long flags)
 {
 	__raw_spin_unlock_irqrestore(lock, flags);
-#ifdef CONFIG_TRACING_SPINLOCK
-       if (spin_locking_flag) {
-               spin_locking_flag[smp_processor_id()] = 0;
-               mb();
-       }
-#endif
 }
 EXPORT_SYMBOL(_raw_spin_unlock_irqrestore);
 #endif
@@ -365,7 +376,7 @@ EXPORT_SYMBOL(_raw_spin_lock_nest_lock);
 
 notrace int in_lock_functions(unsigned long addr)
 {
-	
+	/* Linker adds these: start and end of __lockfunc functions */
 	extern char __lock_text_start[], __lock_text_end[];
 
 	return addr >= (unsigned long)__lock_text_start

@@ -8,7 +8,6 @@
  * the Free Software Foundation.
  */
 
-#include <linux/export.h>
 #include <asm/uaccess.h>
 #include "input-compat.h"
 
@@ -17,7 +16,7 @@
 int input_event_from_user(const char __user *buffer,
 			  struct input_event *event)
 {
-	if (INPUT_COMPAT_TEST && !COMPAT_USE_64BIT_TIME) {
+	if (INPUT_COMPAT_TEST) {
 		struct input_event_compat compat_event;
 
 		if (copy_from_user(&compat_event, buffer,
@@ -41,7 +40,7 @@ int input_event_from_user(const char __user *buffer,
 int input_event_to_user(char __user *buffer,
 			const struct input_event *event)
 {
-	if (INPUT_COMPAT_TEST && !COMPAT_USE_64BIT_TIME) {
+	if (INPUT_COMPAT_TEST) {
 		struct input_event_compat compat_event;
 
 		compat_event.time.tv_sec = event->time.tv_sec;
@@ -71,6 +70,11 @@ int input_ff_effect_from_user(const char __user *buffer, size_t size,
 		if (size != sizeof(struct ff_effect_compat))
 			return -EINVAL;
 
+		/*
+		 * It so happens that the pointer which needs to be changed
+		 * is the last field in the structure, so we can retrieve the
+		 * whole thing and replace just the pointer.
+		 */
 		compat_effect = (struct ff_effect_compat *)effect;
 
 		if (copy_from_user(compat_effect, buffer,
@@ -124,7 +128,7 @@ int input_ff_effect_from_user(const char __user *buffer, size_t size,
 	return 0;
 }
 
-#endif 
+#endif /* CONFIG_COMPAT */
 
 EXPORT_SYMBOL_GPL(input_event_from_user);
 EXPORT_SYMBOL_GPL(input_event_to_user);

@@ -22,7 +22,6 @@
 #include <linux/pmic8058-pwm.h>
 #include <linux/leds-pm8058.h>
 #include <linux/wakelock.h>
-#include <linux/module.h>
 
 #ifdef CONFIG_HTC_HEADSET_MISC
 #include <mach/htc_headset_misc.h>
@@ -35,12 +34,13 @@
 #endif
 
 #define LED_DBG_LOG(fmt, ...) \
-		printk(KERN_DEBUG "[LED] " fmt, ##__VA_ARGS__)
+		printk(KERN_DEBUG "[LED]" fmt, ##__VA_ARGS__)
 #define LED_INFO_LOG(fmt, ...) \
-		printk(KERN_INFO "[LED] " fmt, ##__VA_ARGS__)
+		printk(KERN_INFO "[LED]" fmt, ##__VA_ARGS__)
 #define LED_ERR_LOG(fmt, ...) \
-		printk(KERN_ERR "[LED][ERR] " fmt, ##__VA_ARGS__)
+		printk(KERN_ERR "[LED][ERR]" fmt, ##__VA_ARGS__)
 
+/* static struct pw8058_pwm_config pwm_conf; */
 static struct workqueue_struct *g_led_work_queue;
 static int duties[64];
 static struct pm8058_led_data  *for_key_led_data;
@@ -74,7 +74,7 @@ static int bank_to_id(int bank)
 
 	return id;
 }
-void pm8xxx_led_current_set_for_key(int brightness_key)
+void button_backlight_flash(int brightness_key)
 {
 	int milliamps;
 	int id, mode;
@@ -163,7 +163,7 @@ static void pm8058_pwm_led_brightness_set(struct led_classdev *led_cdev,
 	struct pm8058_led_data *ldata;
 	int enable = 0;
 
-	
+	/* struct pwm_device* pwm_led; */
 	ldata = container_of(led_cdev, struct pm8058_led_data, ldev);
 
 	pwm_disable(ldata->pwm_led);
@@ -231,8 +231,6 @@ static void pm8058_drvx_led_brightness_set(struct led_classdev *led_cdev,
 		milliamps = (ldata->flags & PM8058_LED_DYNAMIC_BRIGHTNESS_EN) ?
 			    ldata->out_current * brightness / LED_FULL :
 			    ldata->out_current;
-		printk(KERN_INFO "%s: flags %d current %d\n", __func__,
-		  ldata->flags, milliamps);
 		pm8058_pwm_config_led(ldata->pwm_led, id, mode, milliamps);
 		if (ldata->flags & PM8058_LED_LTU_EN) {
 			pduties = &duty_array[ldata->start_index];
@@ -292,6 +290,7 @@ static ssize_t pm8058_led_blink_store(struct device *dev,
 	int *pduties;
 #endif
 
+/*struct timespec ts1, ts2;*/
 
 	val = -1;
 	sscanf(buf, "%u", &val);
@@ -316,7 +315,7 @@ static ssize_t pm8058_led_blink_store(struct device *dev,
 		charming_led_enable(enable);
 
 	switch (val) {
-	case -1: 
+	case -1: /* stop flashing */
 		pwm_disable(ldata->pwm_led);
 		if (ldata->flags & PM8058_LED_BLINK_EN)
 			pm8058_pwm_config_led(ldata->pwm_led, id, mode, 0);
@@ -431,7 +430,7 @@ static ssize_t pm8058_led_off_timer_store(struct device *dev,
 	sec = -1;
 	sscanf(buf, "%d %d", &min, &sec);
 
-	if (min < 0 || min > 255 || min == 5)
+	if (min < 0 || min > 255)
 		return -EINVAL;
 	if (sec < 0 || sec > 255)
 		return -EINVAL;
@@ -582,7 +581,6 @@ static int pm8058_led_probe(struct platform_device *pdev)
 
 	pdata = pdev->dev.platform_data;
 
-	LED_INFO_LOG("%s +++ \n", __func__);
 	if (pdata == NULL) {
 		LED_ERR_LOG("%s: platform data is NULL\n", __func__);
 		return -ENODEV;
@@ -737,7 +735,6 @@ static int pm8058_led_probe(struct platform_device *pdev)
 		}
 	}
 
-	LED_INFO_LOG("%s --- \n", __func__);
 	return 0;
 
 err_register_attr_pwm_coefficient:

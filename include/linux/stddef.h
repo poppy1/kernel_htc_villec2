@@ -3,10 +3,14 @@
 
 #include <linux/compiler.h>
 
-#ifdef __KERNEL__
-
 #undef NULL
+#if defined(__cplusplus)
+#define NULL 0
+#else
 #define NULL ((void *)0)
+#endif
+
+#ifdef __KERNEL__
 
 enum {
 	false	= 0,
@@ -19,6 +23,6 @@ enum {
 #else
 #define offsetof(TYPE, MEMBER) ((size_t) &((TYPE *)0)->MEMBER)
 #endif
-#endif 
+#endif /* __KERNEL__ */
 
 #endif

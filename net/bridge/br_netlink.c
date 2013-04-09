@@ -18,7 +18,6 @@
 #include <net/sock.h>
 
 #include "br_private.h"
-#include "br_private_stp.h"
 
 static inline size_t br_nlmsg_size(void)
 {
@@ -189,13 +188,6 @@ static int br_rtm_setlink(struct sk_buff *skb,  struct nlmsghdr *nlh, void *arg)
 
 	p->state = new_state;
 	br_log_state(p);
-
-	spin_lock_bh(&p->br->lock);
-	br_port_state_selection(p->br);
-	spin_unlock_bh(&p->br->lock);
-
-	br_ifinfo_notify(RTM_NEWLINK, p);
-
 	return 0;
 }
 
@@ -211,7 +203,7 @@ static int br_validate(struct nlattr *tb[], struct nlattr *data[])
 	return 0;
 }
 
-struct rtnl_link_ops br_link_ops __read_mostly = {
+static struct rtnl_link_ops br_link_ops __read_mostly = {
 	.kind		= "bridge",
 	.priv_size	= sizeof(struct net_bridge),
 	.setup		= br_dev_setup,
@@ -227,24 +219,19 @@ int __init br_netlink_init(void)
 	if (err < 0)
 		goto err1;
 
-	err = __rtnl_register(PF_BRIDGE, RTM_GETLINK, NULL,
-			      br_dump_ifinfo, NULL);
+	err = __rtnl_register(PF_BRIDGE, RTM_GETLINK, NULL, br_dump_ifinfo);
 	if (err)
 		goto err2;
-	err = __rtnl_register(PF_BRIDGE, RTM_SETLINK,
-			      br_rtm_setlink, NULL, NULL);
+	err = __rtnl_register(PF_BRIDGE, RTM_SETLINK, br_rtm_setlink, NULL);
 	if (err)
 		goto err3;
-	err = __rtnl_register(PF_BRIDGE, RTM_NEWNEIGH,
-			      br_fdb_add, NULL, NULL);
+	err = __rtnl_register(PF_BRIDGE, RTM_NEWNEIGH, br_fdb_add, NULL);
 	if (err)
 		goto err3;
-	err = __rtnl_register(PF_BRIDGE, RTM_DELNEIGH,
-			      br_fdb_delete, NULL, NULL);
+	err = __rtnl_register(PF_BRIDGE, RTM_DELNEIGH, br_fdb_delete, NULL);
 	if (err)
 		goto err3;
-	err = __rtnl_register(PF_BRIDGE, RTM_GETNEIGH,
-			      NULL, br_fdb_dump, NULL);
+	err = __rtnl_register(PF_BRIDGE, RTM_GETNEIGH, NULL, br_fdb_dump);
 	if (err)
 		goto err3;
 

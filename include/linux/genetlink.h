@@ -4,7 +4,7 @@
 #include <linux/types.h>
 #include <linux/netlink.h>
 
-#define GENL_NAMSIZ	16	
+#define GENL_NAMSIZ	16	/* length of family name */
 
 #define GENL_MIN_ID	NLMSG_MIN_TYPE
 #define GENL_MAX_ID	1023
@@ -22,9 +22,15 @@ struct genlmsghdr {
 #define GENL_CMD_CAP_DUMP	0x04
 #define GENL_CMD_CAP_HASPOL	0x08
 
+/*
+ * List of reserved static generic netlink identifiers:
+ */
 #define GENL_ID_GENERATE	0
 #define GENL_ID_CTRL		NLMSG_MIN_TYPE
 
+/**************************************************************************
+ * Controller
+ **************************************************************************/
 
 enum {
 	CTRL_CMD_UNSPEC,
@@ -36,7 +42,7 @@ enum {
 	CTRL_CMD_GETOPS,
 	CTRL_CMD_NEWMCAST_GRP,
 	CTRL_CMD_DELMCAST_GRP,
-	CTRL_CMD_GETMCAST_GRP, 
+	CTRL_CMD_GETMCAST_GRP, /* unused */
 	__CTRL_CMD_MAX,
 };
 
@@ -76,18 +82,10 @@ enum {
 
 #ifdef __KERNEL__
 
+/* All generic netlink requests are serialized by a global lock.  */
 extern void genl_lock(void);
 extern void genl_unlock(void);
-#ifdef CONFIG_PROVE_LOCKING
-extern int lockdep_genl_is_held(void);
-#endif
 
-#define rcu_dereference_genl(p)					\
-	rcu_dereference_check(p, lockdep_genl_is_held())
+#endif /* __KERNEL__ */
 
-#define genl_dereference(p)					\
-	rcu_dereference_protected(p, lockdep_genl_is_held())
-
-#endif 
-
-#endif	
+#endif	/* __LINUX_GENERIC_NETLINK_H */

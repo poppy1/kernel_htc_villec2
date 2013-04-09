@@ -225,11 +225,11 @@ static int teql_qdisc_init(struct Qdisc *sch, struct nlattr *opt)
 
 
 static int
-__teql_resolve(struct sk_buff *skb, struct sk_buff *skb_res,
-	       struct net_device *dev, struct netdev_queue *txq,
-	       struct neighbour *mn)
+__teql_resolve(struct sk_buff *skb, struct sk_buff *skb_res, struct net_device *dev)
 {
-	struct teql_sched_data *q = qdisc_priv(txq->qdisc);
+	struct netdev_queue *dev_queue = netdev_get_tx_queue(dev, 0);
+	struct teql_sched_data *q = qdisc_priv(dev_queue->qdisc);
+	struct neighbour *mn = skb_dst(skb)->neighbour;
 	struct neighbour *n = q->ncache;
 
 	if (mn->tbl == NULL)
@@ -262,26 +262,17 @@ __teql_resolve(struct sk_buff *skb, struct sk_buff *skb_res,
 }
 
 static inline int teql_resolve(struct sk_buff *skb,
-			       struct sk_buff *skb_res,
-			       struct net_device *dev,
-			       struct netdev_queue *txq)
+			       struct sk_buff *skb_res, struct net_device *dev)
 {
-	struct dst_entry *dst = skb_dst(skb);
-	struct neighbour *mn;
-	int res;
-
+	struct netdev_queue *txq = netdev_get_tx_queue(dev, 0);
 	if (txq->qdisc == &noop_qdisc)
 		return -ENODEV;
 
-	if (!dev->header_ops || !dst)
+	if (dev->header_ops == NULL ||
+	    skb_dst(skb) == NULL ||
+	    skb_dst(skb)->neighbour == NULL)
 		return 0;
-
-	rcu_read_lock();
-	mn = dst_get_neighbour_noref(dst);
-	res = mn ? __teql_resolve(skb, skb_res, dev, txq, mn) : 0;
-	rcu_read_unlock();
-
-	return res;
+	return __teql_resolve(skb, skb_res, dev);
 }
 
 static netdev_tx_t teql_master_xmit(struct sk_buff *skb, struct net_device *dev)
@@ -310,18 +301,18 @@ restart:
 
 		if (slave_txq->qdisc_sleeping != q)
 			continue;
-		if (netif_xmit_stopped(netdev_get_tx_queue(slave, subq)) ||
+		if (__netif_subqueue_stopped(slave, subq) ||
 		    !netif_running(slave)) {
 			busy = 1;
 			continue;
 		}
 
-		switch (teql_resolve(skb, skb_res, slave, slave_txq)) {
+		switch (teql_resolve(skb, skb_res, slave)) {
 		case 0:
 			if (__netif_tx_trylock(slave_txq)) {
 				unsigned int length = qdisc_pkt_len(skb);
 
-				if (!netif_xmit_frozen_or_stopped(slave_txq) &&
+				if (!netif_tx_queue_frozen_or_stopped(slave_txq) &&
 				    slave_ops->ndo_start_xmit(skb, slave) == NETDEV_TX_OK) {
 					txq_trans_update(slave_txq);
 					__netif_tx_unlock(slave_txq);
@@ -333,7 +324,7 @@ restart:
 				}
 				__netif_tx_unlock(slave_txq);
 			}
-			if (netif_xmit_stopped(netdev_get_tx_queue(dev, 0)))
+			if (netif_queue_stopped(dev))
 				busy = 1;
 			break;
 		case 1:

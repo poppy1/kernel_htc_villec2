@@ -6,7 +6,6 @@
 #include <linux/dmi.h>
 #include <linux/efi.h>
 #include <linux/bootmem.h>
-#include <linux/random.h>
 #include <asm/dmi.h>
 
 /*
@@ -111,8 +110,6 @@ static int __init dmi_walk_early(void (*decode)(const struct dmi_header *,
 		return -1;
 
 	dmi_table(buf, dmi_len, dmi_num, decode, NULL);
-
-	add_device_randomness(buf, dmi_len);
 
 	dmi_iounmap(buf, dmi_len);
 	return 0;
@@ -588,12 +585,14 @@ int dmi_name_in_serial(const char *str)
 }
 
 /**
- *	dmi_name_in_vendors - Check if string is in the DMI system or board vendor name
+ *	dmi_name_in_vendors - Check if string is anywhere in the DMI vendor information.
  *	@str: 	Case sensitive Name
  */
 int dmi_name_in_vendors(const char *str)
 {
-	static int fields[] = { DMI_SYS_VENDOR, DMI_BOARD_VENDOR, DMI_NONE };
+	static int fields[] = { DMI_BIOS_VENDOR, DMI_BIOS_VERSION, DMI_SYS_VENDOR,
+				DMI_PRODUCT_NAME, DMI_PRODUCT_VERSION, DMI_BOARD_VENDOR,
+				DMI_BOARD_NAME, DMI_BOARD_VERSION, DMI_NONE };
 	int i;
 	for (i = 0; fields[i] != DMI_NONE; i++) {
 		int f = fields[i];

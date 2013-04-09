@@ -16,7 +16,6 @@ struct scsi_driver {
 
 	void (*rescan)(struct device *);
 	int (*done)(struct scsi_cmnd *);
-	int (*eh_action)(struct scsi_cmnd *, unsigned char *, int, int);
 };
 #define to_scsi_driver(drv) \
 	container_of((drv), struct scsi_driver, gendrv)
@@ -35,4 +34,4 @@ int scsi_prep_state_check(struct scsi_device *sdev, struct request *req);
 int scsi_prep_return(struct request_queue *q, struct request *req, int ret);
 int scsi_prep_fn(struct request_queue *, struct request *);
 
-#endif 
+#endif /* _SCSI_SCSI_DRIVER_H */

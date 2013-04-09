@@ -11,8 +11,6 @@
 #include <linux/console.h>
 #include <linux/init.h>
 #include <linux/interrupt.h>
-#include <linux/compat.h>
-#include <linux/module.h>
 #include <linux/list.h>
 #include <linux/slab.h>
 #include <linux/types.h>

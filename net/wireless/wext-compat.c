@@ -8,7 +8,6 @@
  * Copyright 2008-2009	Johannes Berg <johannes@sipsolutions.net>
  */
 
-#include <linux/export.h>
 #include <linux/wireless.h>
 #include <linux/nl80211.h>
 #include <linux/if_arp.h>
@@ -16,7 +15,6 @@
 #include <linux/slab.h>
 #include <net/iw_handler.h>
 #include <net/cfg80211.h>
-#include <net/cfg80211-wext.h>
 #include "wext-compat.h"
 #include "core.h"
 
@@ -40,7 +38,7 @@ int cfg80211_wext_giwname(struct net_device *dev,
 	sband = wdev->wiphy->bands[IEEE80211_BAND_2GHZ];
 	if (sband) {
 		int i;
-		
+		/* Check for mandatory rates */
 		for (i = 0; i < sband->n_bitrates; i++) {
 			if (sband->bitrates[i].bitrate == 10)
 				is_b = true;
@@ -130,7 +128,7 @@ int cfg80211_wext_giwmode(struct net_device *dev, struct iw_request_info *info,
 		*mode = IW_MODE_REPEAT;
 		break;
 	case NL80211_IFTYPE_AP_VLAN:
-		*mode = IW_MODE_SECOND;		
+		*mode = IW_MODE_SECOND;		/* FIXME */
 		break;
 	default:
 		*mode = IW_MODE_AUTO;
@@ -255,8 +253,19 @@ int cfg80211_wext_giwrange(struct net_device *dev,
 EXPORT_SYMBOL_GPL(cfg80211_wext_giwrange);
 
 
+/**
+ * cfg80211_wext_freq - get wext frequency for non-"auto"
+ * @wiphy: the wiphy
+ * @freq: the wext freq encoding
+ *
+ * Returns a frequency, or a negative error code, or 0 for auto.
+ */
 int cfg80211_wext_freq(struct wiphy *wiphy, struct iw_freq *freq)
 {
+	/*
+	 * Parse frequency - return 0 for auto and
+	 * -EINVAL for impossible things.
+	 */
 	if (freq->e == 0) {
 		enum ieee80211_band band = IEEE80211_BAND_2GHZ;
 		if (freq->m < 0)
@@ -327,7 +336,7 @@ int cfg80211_wext_siwfrag(struct net_device *dev,
 	else if (frag->value < 256)
 		return -EINVAL;
 	else {
-		
+		/* Fragment length must be even, so strip LSB. */
 		wdev->wiphy->frag_threshold = frag->value & ~0x1;
 	}
 
@@ -354,9 +363,9 @@ int cfg80211_wext_giwfrag(struct net_device *dev,
 }
 EXPORT_SYMBOL_GPL(cfg80211_wext_giwfrag);
 
-static int cfg80211_wext_siwretry(struct net_device *dev,
-				  struct iw_request_info *info,
-				  struct iw_param *retry, char *extra)
+int cfg80211_wext_siwretry(struct net_device *dev,
+			   struct iw_request_info *info,
+			   struct iw_param *retry, char *extra)
 {
 	struct wireless_dev *wdev = dev->ieee80211_ptr;
 	struct cfg80211_registered_device *rdev = wiphy_to_dev(wdev->wiphy);
@@ -393,6 +402,7 @@ static int cfg80211_wext_siwretry(struct net_device *dev,
 
 	return err;
 }
+EXPORT_SYMBOL_GPL(cfg80211_wext_siwretry);
 
 int cfg80211_wext_giwretry(struct net_device *dev,
 			   struct iw_request_info *info,
@@ -403,6 +413,10 @@ int cfg80211_wext_giwretry(struct net_device *dev,
 	retry->disabled = 0;
 
 	if (retry->flags == 0 || (retry->flags & IW_RETRY_SHORT)) {
+		/*
+		 * First return short value, iwconfig will ask long value
+		 * later if needed
+		 */
 		retry->flags |= IW_RETRY_LIMIT;
 		retry->value = wdev->wiphy->retry_short;
 		if (wdev->wiphy->retry_long != wdev->wiphy->retry_short)
@@ -461,6 +475,10 @@ static int __cfg80211_set_encryption(struct cfg80211_registered_device *rdev,
 	if (remove) {
 		err = 0;
 		if (wdev->current_bss) {
+			/*
+			 * If removing the current TX key, we will need to
+			 * join a new IBSS without the privacy bit clear.
+			 */
 			if (idx == wdev->wext.default_key &&
 			    wdev->iftype == NL80211_IFTYPE_ADHOC) {
 				__cfg80211_leave_ibss(rdev, wdev->netdev, true);
@@ -475,6 +493,10 @@ static int __cfg80211_set_encryption(struct cfg80211_registered_device *rdev,
 							 pairwise, addr);
 		}
 		wdev->wext.connect.privacy = false;
+		/*
+		 * Applications using wireless extensions expect to be
+		 * able to delete keys that don't exist, so allow that.
+		 */
 		if (err == -ENOENT)
 			err = 0;
 		if (!err) {
@@ -519,6 +541,11 @@ static int __cfg80211_set_encryption(struct cfg80211_registered_device *rdev,
 	     params->cipher == WLAN_CIPHER_SUITE_WEP104) &&
 	    (tx_key || (!addr && wdev->wext.default_key == -1))) {
 		if (wdev->current_bss) {
+			/*
+			 * If we are getting a new TX key from not having
+			 * had one before we need to join a new IBSS with
+			 * the privacy bit set.
+			 */
 			if (wdev->iftype == NL80211_IFTYPE_ADHOC &&
 			    wdev->wext.default_key == -1) {
 				__cfg80211_leave_ibss(rdev, wdev->netdev, true);
@@ -555,7 +582,7 @@ static int cfg80211_set_encryption(struct cfg80211_registered_device *rdev,
 {
 	int err;
 
-	
+	/* devlist mutex needed for possible IBSS re-join */
 	mutex_lock(&rdev->devlist_mtx);
 	wdev_lock(dev->ieee80211_ptr);
 	err = __cfg80211_set_encryption(rdev, dev, pairwise, addr,
@@ -566,9 +593,9 @@ static int cfg80211_set_encryption(struct cfg80211_registered_device *rdev,
 	return err;
 }
 
-static int cfg80211_wext_siwencode(struct net_device *dev,
-				   struct iw_request_info *info,
-				   struct iw_point *erq, char *keybuf)
+int cfg80211_wext_siwencode(struct net_device *dev,
+			    struct iw_request_info *info,
+			    struct iw_point *erq, char *keybuf)
 {
 	struct wireless_dev *wdev = dev->ieee80211_ptr;
 	struct cfg80211_registered_device *rdev = wiphy_to_dev(wdev->wiphy);
@@ -580,7 +607,7 @@ static int cfg80211_wext_siwencode(struct net_device *dev,
 	    wdev->iftype != NL80211_IFTYPE_ADHOC)
 		return -EOPNOTSUPP;
 
-	
+	/* no use -- only MFP (set_default_mgmt_key) is optional */
 	if (!rdev->ops->del_key ||
 	    !rdev->ops->add_key ||
 	    !rdev->ops->set_default_key)
@@ -599,7 +626,7 @@ static int cfg80211_wext_siwencode(struct net_device *dev,
 	if (erq->flags & IW_ENCODE_DISABLED)
 		remove = true;
 	else if (erq->length == 0) {
-		
+		/* No key data - just set the default TX key index */
 		err = 0;
 		wdev_lock(wdev);
 		if (wdev->current_bss)
@@ -625,10 +652,11 @@ static int cfg80211_wext_siwencode(struct net_device *dev,
 				       wdev->wext.default_key == -1,
 				       idx, &params);
 }
+EXPORT_SYMBOL_GPL(cfg80211_wext_siwencode);
 
-static int cfg80211_wext_siwencodeext(struct net_device *dev,
-				      struct iw_request_info *info,
-				      struct iw_point *erq, char *extra)
+int cfg80211_wext_siwencodeext(struct net_device *dev,
+			       struct iw_request_info *info,
+			       struct iw_point *erq, char *extra)
 {
 	struct wireless_dev *wdev = dev->ieee80211_ptr;
 	struct cfg80211_registered_device *rdev = wiphy_to_dev(wdev->wiphy);
@@ -643,7 +671,7 @@ static int cfg80211_wext_siwencodeext(struct net_device *dev,
 	    wdev->iftype != NL80211_IFTYPE_ADHOC)
 		return -EOPNOTSUPP;
 
-	
+	/* no use -- only MFP (set_default_mgmt_key) is optional */
 	if (!rdev->ops->del_key ||
 	    !rdev->ops->add_key ||
 	    !rdev->ops->set_default_key)
@@ -716,10 +744,11 @@ static int cfg80211_wext_siwencodeext(struct net_device *dev,
 			ext->ext_flags & IW_ENCODE_EXT_SET_TX_KEY,
 			idx, &params);
 }
+EXPORT_SYMBOL_GPL(cfg80211_wext_siwencodeext);
 
-static int cfg80211_wext_giwencode(struct net_device *dev,
-				   struct iw_request_info *info,
-				   struct iw_point *erq, char *keybuf)
+int cfg80211_wext_giwencode(struct net_device *dev,
+			    struct iw_request_info *info,
+			    struct iw_point *erq, char *keybuf)
 {
 	struct wireless_dev *wdev = dev->ieee80211_ptr;
 	int idx;
@@ -753,10 +782,11 @@ static int cfg80211_wext_giwencode(struct net_device *dev,
 
 	return 0;
 }
+EXPORT_SYMBOL_GPL(cfg80211_wext_giwencode);
 
-static int cfg80211_wext_siwfreq(struct net_device *dev,
-				 struct iw_request_info *info,
-				 struct iw_freq *wextfreq, char *extra)
+int cfg80211_wext_siwfreq(struct net_device *dev,
+			  struct iw_request_info *info,
+			  struct iw_freq *wextfreq, char *extra)
 {
 	struct wireless_dev *wdev = dev->ieee80211_ptr;
 	struct cfg80211_registered_device *rdev = wiphy_to_dev(wdev->wiphy);
@@ -785,30 +815,19 @@ static int cfg80211_wext_siwfreq(struct net_device *dev,
 		return -EOPNOTSUPP;
 	}
 }
+EXPORT_SYMBOL_GPL(cfg80211_wext_siwfreq);
 
-static int cfg80211_wext_giwfreq(struct net_device *dev,
-				 struct iw_request_info *info,
-				 struct iw_freq *freq, char *extra)
+int cfg80211_wext_giwfreq(struct net_device *dev,
+			  struct iw_request_info *info,
+			  struct iw_freq *freq, char *extra)
 {
 	struct wireless_dev *wdev = dev->ieee80211_ptr;
-	struct cfg80211_registered_device *rdev = wiphy_to_dev(wdev->wiphy);
-	struct ieee80211_channel *chan;
 
 	switch (wdev->iftype) {
 	case NL80211_IFTYPE_STATION:
 		return cfg80211_mgd_wext_giwfreq(dev, info, freq, extra);
 	case NL80211_IFTYPE_ADHOC:
 		return cfg80211_ibss_wext_giwfreq(dev, info, freq, extra);
-	case NL80211_IFTYPE_MONITOR:
-		if (!rdev->ops->get_channel)
-			return -EINVAL;
-
-		chan = rdev->ops->get_channel(wdev->wiphy);
-		if (!chan)
-			return -EINVAL;
-		freq->m = chan->center_freq;
-		freq->e = 6;
-		return 0;
 	default:
 		if (!wdev->channel)
 			return -EINVAL;
@@ -817,10 +836,11 @@ static int cfg80211_wext_giwfreq(struct net_device *dev,
 		return 0;
 	}
 }
+EXPORT_SYMBOL_GPL(cfg80211_wext_giwfreq);
 
-static int cfg80211_wext_siwtxpower(struct net_device *dev,
-				    struct iw_request_info *info,
-				    union iwreq_data *data, char *extra)
+int cfg80211_wext_siwtxpower(struct net_device *dev,
+			     struct iw_request_info *info,
+			     union iwreq_data *data, char *extra)
 {
 	struct wireless_dev *wdev = dev->ieee80211_ptr;
 	struct cfg80211_registered_device *rdev = wiphy_to_dev(wdev->wiphy);
@@ -835,17 +855,25 @@ static int cfg80211_wext_siwtxpower(struct net_device *dev,
 	if (!rdev->ops->set_tx_power)
 		return -EOPNOTSUPP;
 
-	
+	/* only change when not disabling */
 	if (!data->txpower.disabled) {
 		rfkill_set_sw_state(rdev->rfkill, false);
 
 		if (data->txpower.fixed) {
+			/*
+			 * wext doesn't support negative values, see
+			 * below where it's for automatic
+			 */
 			if (data->txpower.value < 0)
 				return -EINVAL;
 			dbm = data->txpower.value;
 			type = NL80211_TX_POWER_FIXED;
-			
+			/* TODO: do regulatory check! */
 		} else {
+			/*
+			 * Automatic power level setting, max being the value
+			 * passed in from userland.
+			 */
 			if (data->txpower.value < 0) {
 				type = NL80211_TX_POWER_AUTOMATIC;
 			} else {
@@ -861,10 +889,11 @@ static int cfg80211_wext_siwtxpower(struct net_device *dev,
 
 	return rdev->ops->set_tx_power(wdev->wiphy, type, DBM_TO_MBM(dbm));
 }
+EXPORT_SYMBOL_GPL(cfg80211_wext_siwtxpower);
 
-static int cfg80211_wext_giwtxpower(struct net_device *dev,
-				    struct iw_request_info *info,
-				    union iwreq_data *data, char *extra)
+int cfg80211_wext_giwtxpower(struct net_device *dev,
+			     struct iw_request_info *info,
+			     union iwreq_data *data, char *extra)
 {
 	struct wireless_dev *wdev = dev->ieee80211_ptr;
 	struct cfg80211_registered_device *rdev = wiphy_to_dev(wdev->wiphy);
@@ -882,7 +911,7 @@ static int cfg80211_wext_giwtxpower(struct net_device *dev,
 	if (err)
 		return err;
 
-	
+	/* well... oh well */
 	data->txpower.fixed = 1;
 	data->txpower.disabled = rfkill_blocked(rdev->rfkill);
 	data->txpower.value = val;
@@ -890,6 +919,7 @@ static int cfg80211_wext_giwtxpower(struct net_device *dev,
 
 	return 0;
 }
+EXPORT_SYMBOL_GPL(cfg80211_wext_giwtxpower);
 
 static int cfg80211_set_auth_alg(struct wireless_dev *wdev,
 				 s32 auth_alg)
@@ -1040,9 +1070,9 @@ static int cfg80211_set_key_mgt(struct wireless_dev *wdev, u32 key_mgt)
 	return 0;
 }
 
-static int cfg80211_wext_siwauth(struct net_device *dev,
-				 struct iw_request_info *info,
-				 struct iw_param *data, char *extra)
+int cfg80211_wext_siwauth(struct net_device *dev,
+			  struct iw_request_info *info,
+			  struct iw_param *data, char *extra)
 {
 	struct wireless_dev *wdev = dev->ieee80211_ptr;
 
@@ -1072,19 +1102,21 @@ static int cfg80211_wext_siwauth(struct net_device *dev,
 		return -EOPNOTSUPP;
 	}
 }
+EXPORT_SYMBOL_GPL(cfg80211_wext_siwauth);
 
-static int cfg80211_wext_giwauth(struct net_device *dev,
-				 struct iw_request_info *info,
-				 struct iw_param *data, char *extra)
+int cfg80211_wext_giwauth(struct net_device *dev,
+			  struct iw_request_info *info,
+			  struct iw_param *data, char *extra)
 {
-	
+	/* XXX: what do we need? */
 
 	return -EOPNOTSUPP;
 }
+EXPORT_SYMBOL_GPL(cfg80211_wext_giwauth);
 
-static int cfg80211_wext_siwpower(struct net_device *dev,
-				  struct iw_request_info *info,
-				  struct iw_param *wrq, char *extra)
+int cfg80211_wext_siwpower(struct net_device *dev,
+			   struct iw_request_info *info,
+			   struct iw_param *wrq, char *extra)
 {
 	struct wireless_dev *wdev = dev->ieee80211_ptr;
 	struct cfg80211_registered_device *rdev = wiphy_to_dev(wdev->wiphy);
@@ -1102,12 +1134,12 @@ static int cfg80211_wext_siwpower(struct net_device *dev,
 		ps = false;
 	} else {
 		switch (wrq->flags & IW_POWER_MODE) {
-		case IW_POWER_ON:       
-		case IW_POWER_MODE:     
-		case IW_POWER_ALL_R:    
+		case IW_POWER_ON:       /* If not specified */
+		case IW_POWER_MODE:     /* If set all mask */
+		case IW_POWER_ALL_R:    /* If explicitely state all */
 			ps = true;
 			break;
-		default:                
+		default:                /* Otherwise we ignore */
 			return -EINVAL;
 		}
 
@@ -1128,10 +1160,11 @@ static int cfg80211_wext_siwpower(struct net_device *dev,
 	return 0;
 
 }
+EXPORT_SYMBOL_GPL(cfg80211_wext_siwpower);
 
-static int cfg80211_wext_giwpower(struct net_device *dev,
-				  struct iw_request_info *info,
-				  struct iw_param *wrq, char *extra)
+int cfg80211_wext_giwpower(struct net_device *dev,
+			   struct iw_request_info *info,
+			   struct iw_param *wrq, char *extra)
 {
 	struct wireless_dev *wdev = dev->ieee80211_ptr;
 
@@ -1139,6 +1172,7 @@ static int cfg80211_wext_giwpower(struct net_device *dev,
 
 	return 0;
 }
+EXPORT_SYMBOL_GPL(cfg80211_wext_giwpower);
 
 static int cfg80211_wds_wext_siwap(struct net_device *dev,
 				   struct iw_request_info *info,
@@ -1184,9 +1218,9 @@ static int cfg80211_wds_wext_giwap(struct net_device *dev,
 	return 0;
 }
 
-static int cfg80211_wext_siwrate(struct net_device *dev,
-				 struct iw_request_info *info,
-				 struct iw_param *rate, char *extra)
+int cfg80211_wext_siwrate(struct net_device *dev,
+			  struct iw_request_info *info,
+			  struct iw_param *rate, char *extra)
 {
 	struct wireless_dev *wdev = dev->ieee80211_ptr;
 	struct cfg80211_registered_device *rdev = wiphy_to_dev(wdev->wiphy);
@@ -1204,7 +1238,7 @@ static int cfg80211_wext_siwrate(struct net_device *dev,
 	maxrate = (u32)-1;
 
 	if (rate->value < 0) {
-		
+		/* nothing */
 	} else if (rate->fixed) {
 		fixed = rate->value / 100000;
 	} else {
@@ -1234,14 +1268,15 @@ static int cfg80211_wext_siwrate(struct net_device *dev,
 
 	return rdev->ops->set_bitrate_mask(wdev->wiphy, dev, NULL, &mask);
 }
+EXPORT_SYMBOL_GPL(cfg80211_wext_siwrate);
 
-static int cfg80211_wext_giwrate(struct net_device *dev,
-				 struct iw_request_info *info,
-				 struct iw_param *rate, char *extra)
+int cfg80211_wext_giwrate(struct net_device *dev,
+			  struct iw_request_info *info,
+			  struct iw_param *rate, char *extra)
 {
 	struct wireless_dev *wdev = dev->ieee80211_ptr;
 	struct cfg80211_registered_device *rdev = wiphy_to_dev(wdev->wiphy);
-	
+	/* we are under RTNL - globally locked - so can use a static struct */
 	static struct station_info sinfo;
 	u8 addr[ETH_ALEN];
 	int err;
@@ -1273,12 +1308,14 @@ static int cfg80211_wext_giwrate(struct net_device *dev,
 
 	return 0;
 }
+EXPORT_SYMBOL_GPL(cfg80211_wext_giwrate);
 
-static struct iw_statistics *cfg80211_wireless_stats(struct net_device *dev)
+/* Get wireless statistics.  Called by /proc/net/wireless and by SIOCGIWSTATS */
+struct iw_statistics *cfg80211_wireless_stats(struct net_device *dev)
 {
 	struct wireless_dev *wdev = dev->ieee80211_ptr;
 	struct cfg80211_registered_device *rdev = wiphy_to_dev(wdev->wiphy);
-	
+	/* we are under RTNL - globally locked - so can use static structs */
 	static struct iw_statistics wstats;
 	static struct station_info sinfo;
 	u8 bssid[ETH_ALEN];
@@ -1289,7 +1326,7 @@ static struct iw_statistics *cfg80211_wireless_stats(struct net_device *dev)
 	if (!rdev->ops->get_station)
 		return NULL;
 
-	
+	/* Grab BSSID of current BSS, if any */
 	wdev_lock(wdev);
 	if (!wdev->current_bss) {
 		wdev_unlock(wdev);
@@ -1339,10 +1376,11 @@ static struct iw_statistics *cfg80211_wireless_stats(struct net_device *dev)
 
 	return &wstats;
 }
+EXPORT_SYMBOL_GPL(cfg80211_wireless_stats);
 
-static int cfg80211_wext_siwap(struct net_device *dev,
-			       struct iw_request_info *info,
-			       struct sockaddr *ap_addr, char *extra)
+int cfg80211_wext_siwap(struct net_device *dev,
+			struct iw_request_info *info,
+			struct sockaddr *ap_addr, char *extra)
 {
 	struct wireless_dev *wdev = dev->ieee80211_ptr;
 
@@ -1357,10 +1395,11 @@ static int cfg80211_wext_siwap(struct net_device *dev,
 		return -EOPNOTSUPP;
 	}
 }
+EXPORT_SYMBOL_GPL(cfg80211_wext_siwap);
 
-static int cfg80211_wext_giwap(struct net_device *dev,
-			       struct iw_request_info *info,
-			       struct sockaddr *ap_addr, char *extra)
+int cfg80211_wext_giwap(struct net_device *dev,
+			struct iw_request_info *info,
+			struct sockaddr *ap_addr, char *extra)
 {
 	struct wireless_dev *wdev = dev->ieee80211_ptr;
 
@@ -1375,10 +1414,11 @@ static int cfg80211_wext_giwap(struct net_device *dev,
 		return -EOPNOTSUPP;
 	}
 }
+EXPORT_SYMBOL_GPL(cfg80211_wext_giwap);
 
-static int cfg80211_wext_siwessid(struct net_device *dev,
-				  struct iw_request_info *info,
-				  struct iw_point *data, char *ssid)
+int cfg80211_wext_siwessid(struct net_device *dev,
+			   struct iw_request_info *info,
+			   struct iw_point *data, char *ssid)
 {
 	struct wireless_dev *wdev = dev->ieee80211_ptr;
 
@@ -1391,10 +1431,11 @@ static int cfg80211_wext_siwessid(struct net_device *dev,
 		return -EOPNOTSUPP;
 	}
 }
+EXPORT_SYMBOL_GPL(cfg80211_wext_siwessid);
 
-static int cfg80211_wext_giwessid(struct net_device *dev,
-				  struct iw_request_info *info,
-				  struct iw_point *data, char *ssid)
+int cfg80211_wext_giwessid(struct net_device *dev,
+			   struct iw_request_info *info,
+			   struct iw_point *data, char *ssid)
 {
 	struct wireless_dev *wdev = dev->ieee80211_ptr;
 
@@ -1410,10 +1451,11 @@ static int cfg80211_wext_giwessid(struct net_device *dev,
 		return -EOPNOTSUPP;
 	}
 }
+EXPORT_SYMBOL_GPL(cfg80211_wext_giwessid);
 
-static int cfg80211_wext_siwpmksa(struct net_device *dev,
-				  struct iw_request_info *info,
-				  struct iw_point *data, char *extra)
+int cfg80211_wext_siwpmksa(struct net_device *dev,
+			   struct iw_request_info *info,
+			   struct iw_point *data, char *extra)
 {
 	struct wireless_dev *wdev = dev->ieee80211_ptr;
 	struct cfg80211_registered_device *rdev = wiphy_to_dev(wdev->wiphy);
@@ -1451,6 +1493,7 @@ static int cfg80211_wext_siwpmksa(struct net_device *dev,
 		return -EOPNOTSUPP;
 	}
 }
+EXPORT_SYMBOL_GPL(cfg80211_wext_siwpmksa);
 
 static const iw_handler cfg80211_handlers[] = {
 	[IW_IOCTL_IDX(SIOCGIWNAME)]	= (iw_handler) cfg80211_wext_giwname,

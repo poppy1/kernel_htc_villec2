@@ -48,7 +48,8 @@ static ssize_t ecryptfs_read_update_atime(struct kiocb *iocb,
 				unsigned long nr_segs, loff_t pos)
 {
 	ssize_t rc;
-	struct path lower;
+	struct dentry *lower_dentry;
+	struct vfsmount *lower_vfsmount;
 	struct file *file = iocb->ki_filp;
 
 	rc = generic_file_aio_read(iocb, iov, nr_segs, pos);
@@ -59,9 +60,9 @@ static ssize_t ecryptfs_read_update_atime(struct kiocb *iocb,
 	if (-EIOCBQUEUED == rc)
 		rc = wait_on_sync_kiocb(iocb);
 	if (rc >= 0) {
-		lower.dentry = ecryptfs_dentry_to_lower(file->f_path.dentry);
-		lower.mnt = ecryptfs_dentry_to_lower_mnt(file->f_path.dentry);
-		touch_atime(&lower);
+		lower_dentry = ecryptfs_dentry_to_lower(file->f_path.dentry);
+		lower_vfsmount = ecryptfs_dentry_to_lower_mnt(file->f_path.dentry);
+		touch_atime(lower_vfsmount, lower_dentry);
 	}
 	return rc;
 }
@@ -290,15 +291,14 @@ static int ecryptfs_release(struct inode *inode, struct file *file)
 }
 
 static int
-ecryptfs_fsync(struct file *file, loff_t start, loff_t end, int datasync)
+ecryptfs_fsync(struct file *file, int datasync)
 {
 	int rc = 0;
 
-	rc = generic_file_fsync(file, start, end, datasync);
+	rc = generic_file_fsync(file, datasync);
 	if (rc)
 		goto out;
-	rc = vfs_fsync_range(ecryptfs_file_to_lower(file), start, end,
-			     datasync);
+	rc = vfs_fsync(ecryptfs_file_to_lower(file), datasync);
 out:
 	return rc;
 }

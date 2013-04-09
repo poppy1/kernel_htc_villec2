@@ -54,6 +54,11 @@
 #include <net/net_namespace.h>
 #include <net/netns/generic.h>
 
+/*
+   This version of net/ipv6/sit.c is cloned of net/ipv4/ip_gre.c
+
+   For comments look at net/ipv4/ip_gre.c --ANK
+ */
 
 #define HASH_SIZE  16
 #define HASH(addr) (((__force u32)addr^((__force u32)addr>>4))&0xF)
@@ -73,16 +78,20 @@ struct sit_net {
 	struct net_device *fb_tunnel_dev;
 };
 
+/*
+ * Locking : hash tables are protected by RCU and RTNL
+ */
 
 #define for_each_ip_tunnel_rcu(start) \
 	for (t = rcu_dereference(start); t; t = rcu_dereference(t->next))
 
+/* often modified stats are per cpu, other are shared (netdev->stats) */
 struct pcpu_tstats {
 	unsigned long	rx_packets;
 	unsigned long	rx_bytes;
 	unsigned long	tx_packets;
 	unsigned long	tx_bytes;
-} __attribute__((aligned(4*sizeof(unsigned long))));
+};
 
 static struct net_device_stats *ipip6_get_stats(struct net_device *dev)
 {
@@ -103,6 +112,9 @@ static struct net_device_stats *ipip6_get_stats(struct net_device *dev)
 	dev->stats.tx_bytes   = sum.tx_bytes;
 	return &dev->stats;
 }
+/*
+ * Must be invoked with rcu_read_lock
+ */
 static struct ip_tunnel * ipip6_tunnel_lookup(struct net *net,
 		struct net_device *dev, __be32 remote, __be32 local)
 {
@@ -295,6 +307,9 @@ static int ipip6_tunnel_get_prl(struct ip_tunnel *t,
 	if (cmax > 1 && kprl.addr != htonl(INADDR_ANY))
 		cmax = 1;
 
+	/* For simple GET or for root users,
+	 * we try harder to allocate.
+	 */
 	kp = (cmax <= 1 || capable(CAP_NET_ADMIN)) ?
 		kcalloc(cmax, sizeof(*kp), GFP_KERNEL) :
 		NULL;
@@ -304,6 +319,11 @@ static int ipip6_tunnel_get_prl(struct ip_tunnel *t,
 	ca = t->prl_count < cmax ? t->prl_count : cmax;
 
 	if (!kp) {
+		/* We don't try hard to allocate much memory for
+		 * non-root users.
+		 * For root users, retry allocating enough memory for
+		 * the answer.
+		 */
 		kp = kcalloc(ca, sizeof(*kp), GFP_ATOMIC);
 		if (!kp) {
 			ret = -ENOMEM;
@@ -456,7 +476,7 @@ static void ipip6_tunnel_uninit(struct net_device *dev)
 	struct sit_net *sitn = net_generic(net, sit_net_id);
 
 	if (dev == sitn->fb_tunnel_dev) {
-		RCU_INIT_POINTER(sitn->tunnels_wc[0], NULL);
+		rcu_assign_pointer(sitn->tunnels_wc[0], NULL);
 	} else {
 		ipip6_tunnel_unlink(sitn, netdev_priv(dev));
 		ipip6_tunnel_del_prl(netdev_priv(dev), NULL);
@@ -468,6 +488,10 @@ static void ipip6_tunnel_uninit(struct net_device *dev)
 static int ipip6_err(struct sk_buff *skb, u32 info)
 {
 
+/* All the routers (except for Linux) return only
+   8 bytes of packet payload. It means, that precise relaying of
+   ICMP in the real Internet is absolutely infeasible.
+ */
 	const struct iphdr *iph = (const struct iphdr *)skb->data;
 	const int type = icmp_hdr(skb)->type;
 	const int code = icmp_hdr(skb)->code;
@@ -483,12 +507,16 @@ static int ipip6_err(struct sk_buff *skb, u32 info)
 		switch (code) {
 		case ICMP_SR_FAILED:
 		case ICMP_PORT_UNREACH:
-			
+			/* Impossible event. */
 			return 0;
 		case ICMP_FRAG_NEEDED:
-			
+			/* Soft state for pmtu is maintained by IP core. */
 			return 0;
 		default:
+			/* All others are translated to HOST_UNREACH.
+			   rfc2003 contains "deep thoughts" about NET_UNREACH,
+			   I believe they are just ether pollution. --ANK
+			 */
 			break;
 		}
 		break;
@@ -573,7 +601,7 @@ static int ipip6_rcv(struct sk_buff *skb)
 		return 0;
 	}
 
-	
+	/* no tunnel matched,  let upstream know, ipsec may handle it */
 	rcu_read_unlock();
 	return 1;
 out:
@@ -581,6 +609,10 @@ out:
 	return 0;
 }
 
+/*
+ * Returns the embedded IPv4 address if the IPv6 address
+ * comes from 6rd / 6to4 (RFC 3056) addr space.
+ */
 static inline
 __be32 try_6rd(const struct in6_addr *v6dst, struct ip_tunnel *tunnel)
 {
@@ -608,13 +640,17 @@ __be32 try_6rd(const struct in6_addr *v6dst, struct ip_tunnel *tunnel)
 	}
 #else
 	if (v6dst->s6_addr16[0] == htons(0x2002)) {
-		
+		/* 6to4 v6 addr has 16 bits prefix, 32 v4addr, 16 SLA, ... */
 		memcpy(&dst, &v6dst->s6_addr16[1], 4);
 	}
 #endif
 	return dst;
 }
 
+/*
+ *	This function assumes it is being called from dev_queue_xmit()
+ *	and that skb is filled properly by that function.
+ */
 
 static netdev_tx_t ipip6_tunnel_xmit(struct sk_buff *skb,
 				     struct net_device *dev)
@@ -625,10 +661,10 @@ static netdev_tx_t ipip6_tunnel_xmit(struct sk_buff *skb,
 	const struct ipv6hdr *iph6 = ipv6_hdr(skb);
 	u8     tos = tunnel->parms.iph.tos;
 	__be16 df = tiph->frag_off;
-	struct rtable *rt;     			
-	struct net_device *tdev;		
-	struct iphdr  *iph;			
-	unsigned int max_headroom;		
+	struct rtable *rt;     			/* Route to the other host */
+	struct net_device *tdev;		/* Device to other host */
+	struct iphdr  *iph;			/* Our new IP header */
+	unsigned int max_headroom;		/* The extra header space needed */
 	__be32 dst = tiph->daddr;
 	struct flowi4 fl4;
 	int    mtu;
@@ -638,16 +674,12 @@ static netdev_tx_t ipip6_tunnel_xmit(struct sk_buff *skb,
 	if (skb->protocol != htons(ETH_P_IPV6))
 		goto tx_error;
 
-	if (tos == 1)
-		tos = ipv6_get_dsfield(iph6);
-
-	
+	/* ISATAP (RFC4214) - must come before 6to4 */
 	if (dev->priv_flags & IFF_ISATAP) {
 		struct neighbour *neigh = NULL;
-		bool do_tx_error = false;
 
 		if (skb_dst(skb))
-			neigh = dst_neigh_lookup(skb_dst(skb), &iph6->daddr);
+			neigh = dst_get_neighbour(skb_dst(skb));
 
 		if (neigh == NULL) {
 			if (net_ratelimit())
@@ -662,10 +694,6 @@ static netdev_tx_t ipip6_tunnel_xmit(struct sk_buff *skb,
 		     ipv6_addr_is_isatap(addr6))
 			dst = addr6->s6_addr32[3];
 		else
-			do_tx_error = true;
-
-		neigh_release(neigh);
-		if (do_tx_error)
 			goto tx_error;
 	}
 
@@ -674,10 +702,9 @@ static netdev_tx_t ipip6_tunnel_xmit(struct sk_buff *skb,
 
 	if (!dst) {
 		struct neighbour *neigh = NULL;
-		bool do_tx_error = false;
 
 		if (skb_dst(skb))
-			neigh = dst_neigh_lookup(skb_dst(skb), &iph6->daddr);
+			neigh = dst_get_neighbour(skb_dst(skb));
 
 		if (neigh == NULL) {
 			if (net_ratelimit())
@@ -693,14 +720,10 @@ static netdev_tx_t ipip6_tunnel_xmit(struct sk_buff *skb,
 			addr_type = ipv6_addr_type(addr6);
 		}
 
-		if ((addr_type & IPV6_ADDR_COMPATv4) != 0)
-			dst = addr6->s6_addr32[3];
-		else
-			do_tx_error = true;
+		if ((addr_type & IPV6_ADDR_COMPATv4) == 0)
+			goto tx_error_icmp;
 
-		neigh_release(neigh);
-		if (do_tx_error)
-			goto tx_error;
+		dst = addr6->s6_addr32[3];
 	}
 
 	rt = ip_route_output_ports(dev_net(dev), &fl4, NULL,
@@ -758,6 +781,9 @@ static netdev_tx_t ipip6_tunnel_xmit(struct sk_buff *skb,
 			tunnel->err_count = 0;
 	}
 
+	/*
+	 * Okay, now see if we can stuff it in the buffer as-is.
+	 */
 	max_headroom = LL_RESERVED_SPACE(tdev)+sizeof(struct iphdr);
 
 	if (skb_headroom(skb) < max_headroom || skb_shared(skb) ||
@@ -784,6 +810,9 @@ static netdev_tx_t ipip6_tunnel_xmit(struct sk_buff *skb,
 	skb_dst_drop(skb);
 	skb_dst_set(skb, &rt->dst);
 
+	/*
+	 *	Push down and install the IPIP header.
+	 */
 
 	iph 			=	ip_hdr(skb);
 	iph->version		=	4;
@@ -884,7 +913,7 @@ ipip6_tunnel_ioctl (struct net_device *dev, struct ifreq *ifr, int cmd)
 				goto done;
 #ifdef CONFIG_IPV6_SIT_6RD
 		} else {
-			ip6rd.prefix = t->ip6rd.prefix;
+			ipv6_addr_copy(&ip6rd.prefix, &t->ip6rd.prefix);
 			ip6rd.relay_prefix = t->ip6rd.relay_prefix;
 			ip6rd.prefixlen = t->ip6rd.prefixlen;
 			ip6rd.relay_prefixlen = t->ip6rd.relay_prefixlen;
@@ -1052,7 +1081,7 @@ ipip6_tunnel_ioctl (struct net_device *dev, struct ifreq *ifr, int cmd)
 			if (relay_prefix != ip6rd.relay_prefix)
 				goto done;
 
-			t->ip6rd.prefix = prefix;
+			ipv6_addr_copy(&t->ip6rd.prefix, &prefix);
 			t->ip6rd.relay_prefix = relay_prefix;
 			t->ip6rd.prefixlen = ip6rd.prefixlen;
 			t->ip6rd.relay_prefixlen = ip6rd.relay_prefixlen;
@@ -1238,7 +1267,7 @@ static void __exit sit_cleanup(void)
 	xfrm4_tunnel_deregister(&sit_handler, AF_INET6);
 
 	unregister_pernet_device(&sit_net_ops);
-	rcu_barrier(); 
+	rcu_barrier(); /* Wait for completion of call_rcu()'s */
 }
 
 static int __init sit_init(void)

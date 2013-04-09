@@ -46,9 +46,13 @@
 
 static int ipv6_dev_ac_dec(struct net_device *dev, const struct in6_addr *addr);
 
+/* Big ac list lock for all the sockets */
 static DEFINE_RWLOCK(ipv6_sk_ac_lock);
 
 
+/*
+ *	socket join an anycast group
+ */
 
 int ipv6_sock_ac_join(struct sock *sk, int ifindex, const struct in6_addr *addr)
 {
@@ -71,7 +75,7 @@ int ipv6_sock_ac_join(struct sock *sk, int ifindex, const struct in6_addr *addr)
 	if (pac == NULL)
 		return -ENOMEM;
 	pac->acl_next = NULL;
-	pac->acl_addr = *addr;
+	ipv6_addr_copy(&pac->acl_addr, addr);
 
 	rcu_read_lock();
 	if (ifindex == 0) {
@@ -79,13 +83,13 @@ int ipv6_sock_ac_join(struct sock *sk, int ifindex, const struct in6_addr *addr)
 
 		rt = rt6_lookup(net, addr, NULL, 0, 0);
 		if (rt) {
-			dev = rt->dst.dev;
+			dev = rt->rt6i_dev;
 			dst_release(&rt->dst);
 		} else if (ishost) {
 			err = -EADDRNOTAVAIL;
 			goto error;
 		} else {
-			
+			/* router, no matching interface: just pick one */
 			dev = dev_get_by_flags_rcu(net, IFF_UP,
 						   IFF_UP | IFF_LOOPBACK);
 		}
@@ -105,11 +109,16 @@ int ipv6_sock_ac_join(struct sock *sk, int ifindex, const struct in6_addr *addr)
 			err = -EADDRNOTAVAIL;
 		goto error;
 	}
-	
+	/* reset ishost, now that we have a specific device */
 	ishost = !idev->cnf.forwarding;
 
 	pac->acl_ifindex = dev->ifindex;
 
+	/* XXX
+	 * For hosts, allow link-local or matching prefix anycasts.
+	 * This obviates the need for propagating anycast routes while
+	 * still allowing some non-router anycast participation.
+	 */
 	if (!ipv6_chk_prefix(addr, dev)) {
 		if (ishost)
 			err = -EADDRNOTAVAIL;
@@ -133,6 +142,9 @@ error:
 	return err;
 }
 
+/*
+ *	socket leave an anycast group
+ */
 int ipv6_sock_ac_drop(struct sock *sk, int ifindex, const struct in6_addr *addr)
 {
 	struct ipv6_pinfo *np = inet6_sk(sk);
@@ -199,6 +211,35 @@ void ipv6_sock_ac_close(struct sock *sk)
 	rcu_read_unlock();
 }
 
+#if 0
+/* The function is not used, which is funny. Apparently, author
+ * supposed to use it to filter out datagrams inside udp/raw but forgot.
+ *
+ * It is OK, anycasts are not special comparing to delivery to unicasts.
+ */
+
+int inet6_ac_check(struct sock *sk, struct in6_addr *addr, int ifindex)
+{
+	struct ipv6_ac_socklist *pac;
+	struct ipv6_pinfo *np = inet6_sk(sk);
+	int	found;
+
+	found = 0;
+	read_lock(&ipv6_sk_ac_lock);
+	for (pac=np->ipv6_ac_list; pac; pac=pac->acl_next) {
+		if (ifindex && pac->acl_ifindex != ifindex)
+			continue;
+		found = ipv6_addr_equal(&pac->acl_addr, addr);
+		if (found)
+			break;
+	}
+	read_unlock(&ipv6_sk_ac_lock);
+
+	return found;
+}
+
+#endif
+
 static void aca_put(struct ifacaddr6 *ac)
 {
 	if (atomic_dec_and_test(&ac->aca_refcnt)) {
@@ -208,6 +249,9 @@ static void aca_put(struct ifacaddr6 *ac)
 	}
 }
 
+/*
+ *	device anycast group inc (add if not found)
+ */
 int ipv6_dev_ac_inc(struct net_device *dev, const struct in6_addr *addr)
 {
 	struct ifacaddr6 *aca;
@@ -234,6 +278,9 @@ int ipv6_dev_ac_inc(struct net_device *dev, const struct in6_addr *addr)
 		}
 	}
 
+	/*
+	 *	not found: create a new one.
+	 */
 
 	aca = kzalloc(sizeof(struct ifacaddr6), GFP_ATOMIC);
 
@@ -242,18 +289,18 @@ int ipv6_dev_ac_inc(struct net_device *dev, const struct in6_addr *addr)
 		goto out;
 	}
 
-	rt = addrconf_dst_alloc(idev, addr, true);
+	rt = addrconf_dst_alloc(idev, addr, 1);
 	if (IS_ERR(rt)) {
 		kfree(aca);
 		err = PTR_ERR(rt);
 		goto out;
 	}
 
-	aca->aca_addr = *addr;
+	ipv6_addr_copy(&aca->aca_addr, addr);
 	aca->aca_idev = idev;
 	aca->aca_rt = rt;
 	aca->aca_users = 1;
-	
+	/* aca_tstamp should be updated upon changes */
 	aca->aca_cstamp = aca->aca_tstamp = jiffies;
 	atomic_set(&aca->aca_refcnt, 2);
 	spin_lock_init(&aca->aca_lock);
@@ -274,6 +321,9 @@ out:
 	return err;
 }
 
+/*
+ *	device anycast group decrement
+ */
 int __ipv6_dev_ac_dec(struct inet6_dev *idev, const struct in6_addr *addr)
 {
 	struct ifacaddr6 *aca, *prev_aca;
@@ -307,6 +357,7 @@ int __ipv6_dev_ac_dec(struct inet6_dev *idev, const struct in6_addr *addr)
 	return 0;
 }
 
+/* called with rcu_read_lock() */
 static int ipv6_dev_ac_dec(struct net_device *dev, const struct in6_addr *addr)
 {
 	struct inet6_dev *idev = __in6_dev_get(dev);
@@ -316,6 +367,10 @@ static int ipv6_dev_ac_dec(struct net_device *dev, const struct in6_addr *addr)
 	return __ipv6_dev_ac_dec(idev, addr);
 }
 
+/*
+ *	check if the interface has this anycast address
+ *	called with rcu_read_lock()
+ */
 static int ipv6_chk_acast_dev(struct net_device *dev, const struct in6_addr *addr)
 {
 	struct inet6_dev *idev;
@@ -333,6 +388,9 @@ static int ipv6_chk_acast_dev(struct net_device *dev, const struct in6_addr *add
 	return 0;
 }
 
+/*
+ *	check if given interface (or any, if dev==0) has this anycast address
+ */
 int ipv6_chk_acast_addr(struct net *net, struct net_device *dev,
 			const struct in6_addr *addr)
 {

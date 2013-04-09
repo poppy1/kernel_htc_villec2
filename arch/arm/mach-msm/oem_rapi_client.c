@@ -11,8 +11,10 @@
  *
  */
 
+/*
+ * OEM RAPI CLIENT Driver source file
+ */
 
-#include <linux/module.h>
 #include <linux/slab.h>
 #include <linux/kernel.h>
 #include <linux/err.h>
@@ -21,11 +23,10 @@
 #include <linux/debugfs.h>
 #include <linux/uaccess.h>
 #include <linux/delay.h>
-#include <linux/module.h>
 #include <mach/msm_rpcrouter.h>
 #include <mach/oem_rapi_client.h>
 
-#define OEM_RAPI_PROG  0x3000006B
+#define OEM_RAPI_PROG  0x3001006B
 #define OEM_RAPI_VERS  0x00010001
 
 #define OEM_RAPI_NULL_PROC                        0
@@ -38,6 +39,7 @@ static struct msm_rpc_client *rpc_client;
 static uint32_t open_count;
 static DEFINE_MUTEX(oem_rapi_client_lock);
 
+/* TODO: check where to allocate memory for return */
 static int oem_rapi_client_cb(struct msm_rpc_client *client,
 			      struct rpc_request_hdr *req,
 			      struct msm_rpc_xdr *xdr)
@@ -54,12 +56,12 @@ static int oem_rapi_client_cb(struct msm_rpc_client *client,
 	ret.out_len = NULL;
 	ret.output = NULL;
 
-	xdr_recv_uint32(xdr, &cb_id);                    
-	xdr_recv_uint32(xdr, &arg.event);                
-	xdr_recv_uint32(xdr, (uint32_t *)(&arg.handle)); 
-	xdr_recv_uint32(xdr, &arg.in_len);               
-	xdr_recv_bytes(xdr, (void **)&arg.input, &temp); 
-	xdr_recv_uint32(xdr, &arg.out_len_valid);        
+	xdr_recv_uint32(xdr, &cb_id);                    /* cb_id */
+	xdr_recv_uint32(xdr, &arg.event);                /* enum */
+	xdr_recv_uint32(xdr, (uint32_t *)(&arg.handle)); /* handle */
+	xdr_recv_uint32(xdr, &arg.in_len);               /* in_len */
+	xdr_recv_bytes(xdr, (void **)&arg.input, &temp); /* input */
+	xdr_recv_uint32(xdr, &arg.out_len_valid);        /* out_len */
 	if (arg.out_len_valid) {
 		ret.out_len = kmalloc(sizeof(*ret.out_len), GFP_KERNEL);
 		if (!ret.out_len) {
@@ -68,9 +70,9 @@ static int oem_rapi_client_cb(struct msm_rpc_client *client,
 		}
 	}
 
-	xdr_recv_uint32(xdr, &arg.output_valid);         
+	xdr_recv_uint32(xdr, &arg.output_valid);         /* out */
 	if (arg.output_valid) {
-		xdr_recv_uint32(xdr, &arg.output_size);  
+		xdr_recv_uint32(xdr, &arg.output_size);  /* ouput_size */
 
 		ret.output = kmalloc(arg.output_size, GFP_KERNEL);
 		if (!ret.output) {
@@ -99,7 +101,7 @@ static int oem_rapi_client_cb(struct msm_rpc_client *client,
 		xdr_send_pointer(xdr, (void **)&(ret.out_len), temp,
 				 xdr_send_uint32);
 
-		
+		/* output */
 		if (ret.output && ret.out_len)
 			xdr_send_bytes(xdr, (const void **)&ret.output,
 					     ret.out_len);
@@ -130,16 +132,16 @@ static int oem_rapi_client_streaming_function_arg(struct msm_rpc_client *client,
 	if ((cb_id < 0) && (cb_id != MSM_RPC_CLIENT_NULL_CB_ID))
 		return cb_id;
 
-	xdr_send_uint32(xdr, &arg->event);                
-	xdr_send_uint32(xdr, &cb_id);                     
-	xdr_send_uint32(xdr, (uint32_t *)(&arg->handle)); 
-	xdr_send_uint32(xdr, &arg->in_len);               
+	xdr_send_uint32(xdr, &arg->event);                /* enum */
+	xdr_send_uint32(xdr, &cb_id);                     /* cb_id */
+	xdr_send_uint32(xdr, (uint32_t *)(&arg->handle)); /* handle */
+	xdr_send_uint32(xdr, &arg->in_len);               /* in_len */
 	xdr_send_bytes(xdr, (const void **)&arg->input,
-			     &arg->in_len);                     
-	xdr_send_uint32(xdr, &arg->out_len_valid);        
-	xdr_send_uint32(xdr, &arg->output_valid);         
+			     &arg->in_len);                     /* input */
+	xdr_send_uint32(xdr, &arg->out_len_valid);        /* out_len */
+	xdr_send_uint32(xdr, &arg->output_valid);         /* output */
 
-	
+	/* output_size */
 	if (arg->output_valid)
 		xdr_send_uint32(xdr, &arg->output_size);
 
@@ -153,11 +155,11 @@ static int oem_rapi_client_streaming_function_ret(struct msm_rpc_client *client,
 	struct oem_rapi_client_streaming_func_ret *ret = data;
 	uint32_t temp;
 
-	
+	/* out_len */
 	xdr_recv_pointer(xdr, (void **)&(ret->out_len), sizeof(uint32_t),
 			 xdr_recv_uint32);
 
-	
+	/* output */
 	if (ret->out_len && *ret->out_len)
 		xdr_recv_bytes(xdr, (void **)&ret->output, &temp);
 
@@ -180,10 +182,12 @@ EXPORT_SYMBOL(oem_rapi_client_streaming_function);
 int oem_rapi_client_close(void)
 {
 	mutex_lock(&oem_rapi_client_lock);
-	if (--open_count == 0) {
-		msm_rpc_unregister_client(rpc_client);
-		pr_info("%s: disconnected from remote oem rapi server\n",
-			__func__);
+	if (open_count > 0) {
+		if (--open_count == 0) {
+			msm_rpc_unregister_client(rpc_client);
+			pr_info("%s: disconnected from remote oem rapi server\n",
+				__func__);
+		}
 	}
 	mutex_unlock(&oem_rapi_client_lock);
 	return 0;
@@ -200,6 +204,9 @@ struct msm_rpc_client *oem_rapi_client_init(void)
 						      oem_rapi_client_cb);
 		if (!IS_ERR(rpc_client))
 			open_count++;
+	} else {
+		/* increase the counter */
+		open_count++;
 	}
 	mutex_unlock(&oem_rapi_client_lock);
 	return rpc_client;

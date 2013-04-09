@@ -1,3 +1,6 @@
+/*
+ * Wrapper functions for accessing the file_struct fd array.
+ */
 
 #ifndef __LINUX_FILE_H
 #define __LINUX_FILE_H
@@ -9,6 +12,7 @@
 struct file;
 
 extern void fput(struct file *);
+extern void drop_file_write_access(struct file *file);
 
 struct file_operations;
 struct vfsmount;
@@ -36,4 +40,4 @@ extern void put_unused_fd(unsigned int fd);
 
 extern void fd_install(unsigned int fd, struct file *file);
 
-#endif 
+#endif /* __LINUX_FILE_H */

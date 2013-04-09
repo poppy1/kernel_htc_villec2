@@ -1,3 +1,4 @@
+/* Kernel module to match ROUTING parameters. */
 
 /* (C) 2001-2002 Andras Kis-Szabo <kisza@sch.bme.hu>
  *
@@ -23,6 +24,7 @@ MODULE_LICENSE("GPL");
 MODULE_DESCRIPTION("Xtables: IPv6 Routing Header match");
 MODULE_AUTHOR("Andras Kis-Szabo <kisza@sch.bme.hu>");
 
+/* Returns 1 if the id is matched by the range, 0 otherwise */
 static inline bool
 segsleft_match(u_int32_t min, u_int32_t max, u_int32_t id, bool invert)
 {
@@ -62,7 +64,7 @@ static bool rt_mt6(const struct sk_buff *skb, struct xt_action_param *par)
 
 	hdrlen = ipv6_optlen(rh);
 	if (skb->len - ptr < hdrlen) {
-		
+		/* Pcket smaller than its length field */
 		return false;
 	}
 
@@ -109,7 +111,10 @@ static bool rt_mt6(const struct sk_buff *skb, struct xt_action_param *par)
 						       reserved),
 					sizeof(_reserved),
 					&_reserved);
-
+		if (rp == NULL) {
+			pr_debug("Null Pointer will be dereferenced: rp\n");
+			return false;
+		}
 		ret = (*rp == 0);
 	}
 
@@ -136,7 +141,10 @@ static bool rt_mt6(const struct sk_buff *skb, struct xt_action_param *par)
 							&_addr);
 
 				BUG_ON(ap == NULL);
-
+				if (i >= IP6T_RT_HOPS) {
+					pr_debug("buffer overflow on addrs[i]: i > IP6T_RT_HOPS\n");
+					return false;
+				}
 				if (ipv6_addr_equal(ap, &rtinfo->addrs[i])) {
 					pr_debug("i=%d temp=%d;\n", i, temp);
 					i++;

@@ -1,11 +1,10 @@
 /*
- *   (c) 2003-2012 Advanced Micro Devices, Inc.
+ *   (c) 2003-2010 Advanced Micro Devices, Inc.
  *  Your use of this code is subject to the terms and conditions of the
  *  GNU general public license version 2. See "COPYING" or
  *  http://www.gnu.org/licenses/gpl.html
  *
- *  Maintainer:
- *  Andreas Herrmann <andreas.herrmann3@amd.com>
+ *  Support : mark.langsdorf@amd.com
  *
  *  Based on the powernow-k7.c module written by Dave Jones.
  *  (C) 2003 Dave Jones on behalf of SuSE Labs
@@ -17,14 +16,12 @@
  *  Valuable input gratefully received from Dave Jones, Pavel Machek,
  *  Dominik Brodowski, Jacob Shin, and others.
  *  Originally developed by Paul Devriendt.
+ *  Processor information obtained from Chapter 9 (Power and Thermal Management)
+ *  of the "BIOS and Kernel Developer's Guide for the AMD Athlon 64 and AMD
+ *  Opteron Processors" available for download from www.amd.com
  *
- *  Processor information obtained from Chapter 9 (Power and Thermal
- *  Management) of the "BIOS and Kernel Developer's Guide (BKDG) for
- *  the AMD Athlon 64 and AMD Opteron Processors" and section "2.x
- *  Power Management" in BKDGs for newer AMD CPU families.
- *
- *  Tables for specific CPUs can be inferred from AMD's processor
- *  power and thermal data sheets, (e.g. 30417.pdf, 30430.pdf, 43375.pdf)
+ *  Tables for specific CPUs can be inferred from
+ *     http://www.amd.com/us-en/assets/content_type/white_papers_and_tech_docs/30430.pdf
  */
 
 #include <linux/kernel.h>
@@ -40,7 +37,6 @@
 #include <linux/delay.h>
 
 #include <asm/msr.h>
-#include <asm/cpu_device_id.h>
 
 #include <linux/acpi.h>
 #include <linux/mutex.h>
@@ -57,9 +53,6 @@ static DEFINE_MUTEX(fidvid_mutex);
 static DEFINE_PER_CPU(struct powernow_k8_data *, powernow_data);
 
 static int cpu_family = CPU_OPTERON;
-
-/* array to map SW pstate number to acpi state */
-static u32 ps_to_as[8];
 
 /* core performance boost */
 static bool cpb_capable, cpb_enabled;
@@ -87,9 +80,9 @@ static u32 find_khz_freq_from_fid(u32 fid)
 }
 
 static u32 find_khz_freq_from_pstate(struct cpufreq_frequency_table *data,
-				     u32 pstate)
+		u32 pstate)
 {
-	return data[ps_to_as[pstate]].frequency;
+	return data[pstate].frequency;
 }
 
 /* Return the vco fid for an input fid
@@ -521,15 +514,6 @@ static int core_voltage_post_transition(struct powernow_k8_data *data,
 	return 0;
 }
 
-static const struct x86_cpu_id powernow_k8_ids[] = {
-	/* IO based frequency switching */
-	{ X86_VENDOR_AMD, 0xf },
-	/* MSR based frequency switching supported */
-	X86_FEATURE_MATCH(X86_FEATURE_HW_PSTATE),
-	{}
-};
-MODULE_DEVICE_TABLE(x86cpu, powernow_k8_ids);
-
 static void check_supported_cpu(void *_rc)
 {
 	u32 eax, ebx, ecx, edx;
@@ -537,7 +521,13 @@ static void check_supported_cpu(void *_rc)
 
 	*rc = -ENODEV;
 
+	if (__this_cpu_read(cpu_info.x86_vendor) != X86_VENDOR_AMD)
+		return;
+
 	eax = cpuid_eax(CPUID_PROCESSOR_SIGNATURE);
+	if (((eax & CPUID_XFAM) != CPUID_XFAM_K8) &&
+	    ((eax & CPUID_XFAM) < CPUID_XFAM_10H))
+		return;
 
 	if ((eax & CPUID_XFAM) == CPUID_XFAM_K8) {
 		if (((eax & CPUID_USE_XFAM_XMOD) != CPUID_USE_XFAM_XMOD) ||
@@ -936,27 +926,23 @@ static int fill_powernow_table_pstate(struct powernow_k8_data *data,
 			invalidate_entry(powernow_table, i);
 			continue;
 		}
+		rdmsr(MSR_PSTATE_DEF_BASE + index, lo, hi);
+		if (!(hi & HW_PSTATE_VALID_MASK)) {
+			pr_debug("invalid pstate %d, ignoring\n", index);
+			invalidate_entry(powernow_table, i);
+			continue;
+		}
 
-		ps_to_as[index] = i;
+		powernow_table[i].index = index;
 
 		/* Frequency may be rounded for these */
 		if ((boot_cpu_data.x86 == 0x10 && boot_cpu_data.x86_model < 10)
 				 || boot_cpu_data.x86 == 0x11) {
-
-			rdmsr(MSR_PSTATE_DEF_BASE + index, lo, hi);
-			if (!(hi & HW_PSTATE_VALID_MASK)) {
-				pr_debug("invalid pstate %d, ignoring\n", index);
-				invalidate_entry(powernow_table, i);
-				continue;
-			}
-
 			powernow_table[i].frequency =
 				freq_from_fid_did(lo & 0x3f, (lo >> 6) & 7);
 		} else
 			powernow_table[i].frequency =
 				data->acpi_data.states[i].core_frequency * 1000;
-
-		powernow_table[i].index = index;
 	}
 	return 0;
 }
@@ -1203,8 +1189,7 @@ static int powernowk8_target(struct cpufreq_policy *pol,
 	powernow_k8_acpi_pst_values(data, newstate);
 
 	if (cpu_family == CPU_HW_PSTATE)
-		ret = transition_frequency_pstate(data,
-			data->powernow_table[newstate].index);
+		ret = transition_frequency_pstate(data, newstate);
 	else
 		ret = transition_frequency_fidvid(data, newstate);
 	if (ret) {
@@ -1217,7 +1202,7 @@ static int powernowk8_target(struct cpufreq_policy *pol,
 
 	if (cpu_family == CPU_HW_PSTATE)
 		pol->cur = find_khz_freq_from_pstate(data->powernow_table,
-				data->powernow_table[newstate].index);
+				newstate);
 	else
 		pol->cur = find_khz_freq_from_fid(data->currfid);
 	ret = 0;
@@ -1556,9 +1541,6 @@ static int __cpuinit powernowk8_init(void)
 {
 	unsigned int i, supported_cpus = 0, cpu;
 	int rv;
-
-	if (!x86_match_cpu(powernow_k8_ids))
-		return -ENODEV;
 
 	for_each_online_cpu(i) {
 		int rc;

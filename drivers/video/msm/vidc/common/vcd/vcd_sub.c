@@ -17,10 +17,9 @@
 #include "vcd.h"
 #include "vdec_internal.h"
 
+
 #define MAX(x, y) (((x) > (y)) ? (x) : (y))
 #define MAP_TABLE_SZ 64
-#define VCD_ENC_MAX_OUTBFRS_PER_FRAME 8
-#define MAX_DEC_TIME 33
 
 struct vcd_msm_map_buffer {
 	phys_addr_t phy_addr;
@@ -41,8 +40,6 @@ static int vcd_pmem_alloc(size_t sz, u8 **kernel_vaddr, u8 **phy_addr,
 	unsigned long buffer_size = 0;
 	int ret = 0;
 	unsigned long ionflag = 0;
-	ion_phys_addr_t phyaddr = 0;
-	size_t len = 0;
 
 	if (!kernel_vaddr || !phy_addr || !cctxt) {
 		pr_err("\n%s: Invalid parameters", __func__);
@@ -61,7 +58,9 @@ static int vcd_pmem_alloc(size_t sz, u8 **kernel_vaddr, u8 **phy_addr,
 		pr_err("%s() map table is full", __func__);
 		goto bailout;
 	}
+#ifdef CONFIG_MSM_MULTIMEDIA_USE_ION
 	res_trk_set_mem_type(DDL_MM_MEM);
+#endif
 	memtype = res_trk_get_mem_type();
 	if (!cctxt->vcd_enable_ion) {
 		map_buffer->phy_addr = (phys_addr_t)
@@ -86,9 +85,6 @@ static int vcd_pmem_alloc(size_t sz, u8 **kernel_vaddr, u8 **phy_addr,
 		}
 		*phy_addr = (u8 *) mapped_buffer->iova[0];
 		*kernel_vaddr = (u8 *) mapped_buffer->vaddr;
-		VCD_MSG_LOW("vcd_pmem_alloc: phys(0x%x), virt(0x%x), "\
-			"sz(%u), flags(0x%x)", (u32)*phy_addr,
-			(u32)*kernel_vaddr, sz, (u32)flags);
 	} else {
 		map_buffer->alloc_handle = ion_alloc(
 			    cctxt->vcd_ion_client, sz, SZ_4K,
@@ -109,10 +105,9 @@ static int vcd_pmem_alloc(size_t sz, u8 **kernel_vaddr, u8 **phy_addr,
 				ionflag);
 		if (!(*kernel_vaddr)) {
 			pr_err("%s() ION map failed", __func__);
-			goto ion_free_bailout;
+			goto bailout;
 		}
-		if (res_trk_get_core_type() != (u32)VCD_CORE_720P) {
-			ret = ion_map_iommu(cctxt->vcd_ion_client,
+		ret = ion_map_iommu(cctxt->vcd_ion_client,
 				map_buffer->alloc_handle,
 				VIDEO_DOMAIN,
 				VIDEO_MAIN_POOL,
@@ -121,34 +116,18 @@ static int vcd_pmem_alloc(size_t sz, u8 **kernel_vaddr, u8 **phy_addr,
 				(unsigned long *)&iova,
 				(unsigned long *)&buffer_size,
 				UNCACHED, 0);
-			if (ret || !iova) {
-				pr_err(
-				"%s() ION iommu map failed, ret = %d, iova = 0x%lx",
-					__func__, ret, iova);
-				goto ion_map_bailout;
-			}
-			map_buffer->phy_addr = iova;
-		} else {
-			ret = ion_phys(cctxt->vcd_ion_client,
-				map_buffer->alloc_handle,
-				&phyaddr,
-				&len);
-			if (ret) {
-				pr_err("%s() ion_phys failed", __func__);
-				goto ion_map_bailout;
-			}
-			map_buffer->phy_addr = phyaddr;
+		if (ret) {
+			pr_err("%s() ION iommu map failed", __func__);
+			goto bailout;
 		}
+		map_buffer->phy_addr = iova;
 		if (!map_buffer->phy_addr) {
 			pr_err("%s() acm alloc failed", __func__);
 			goto free_map_table;
 		}
-		*phy_addr = (u8 *)map_buffer->phy_addr;
+		*phy_addr = (u8 *)iova;
 		mapped_buffer = NULL;
 		map_buffer->mapped_buffer = NULL;
-		VCD_MSG_LOW("vcd_ion_alloc: phys(0x%x), virt(0x%x), "\
-			"sz(%u), ionflags(0x%x)", (u32)*phy_addr,
-			(u32)*kernel_vaddr, sz, (u32)ionflag);
 	}
 
 	return 0;
@@ -160,12 +139,9 @@ free_acm_alloc:
 	if (!cctxt->vcd_enable_ion) {
 		free_contiguous_memory_by_paddr(
 		(unsigned long)map_buffer->phy_addr);
+	} else {
+		ion_free(cctxt->vcd_ion_client, map_buffer->alloc_handle);
 	}
-	return -ENOMEM;
-ion_map_bailout:
-	ion_unmap_kernel(cctxt->vcd_ion_client, map_buffer->alloc_handle);
-ion_free_bailout:
-	ion_free(cctxt->vcd_ion_client, map_buffer->alloc_handle);
 free_map_table:
 	map_buffer->in_use = 0;
 bailout:
@@ -198,13 +174,10 @@ static int vcd_pmem_free(u8 *kernel_vaddr, u8 *phy_addr,
 	if (map_buffer->mapped_buffer)
 		msm_subsystem_unmap_buffer(map_buffer->mapped_buffer);
 	if (cctxt->vcd_enable_ion) {
-		VCD_MSG_LOW("vcd_ion_free: phys(0x%x), virt(0x%x)",
-			(u32)phy_addr, (u32)kernel_vaddr);
 		if (map_buffer->alloc_handle) {
 			ion_unmap_kernel(cctxt->vcd_ion_client,
 					map_buffer->alloc_handle);
-			if (res_trk_get_core_type() != (u32)VCD_CORE_720P)
-				ion_unmap_iommu(cctxt->vcd_ion_client,
+			ion_unmap_iommu(cctxt->vcd_ion_client,
 					map_buffer->alloc_handle,
 					VIDEO_DOMAIN,
 					VIDEO_MAIN_POOL);
@@ -212,8 +185,6 @@ static int vcd_pmem_free(u8 *kernel_vaddr, u8 *phy_addr,
 			map_buffer->alloc_handle);
 		}
 	} else {
-		VCD_MSG_LOW("vcd_pmem_free: phys(0x%x), virt(0x%x)",
-			(u32)phy_addr, (u32)kernel_vaddr);
 		free_contiguous_memory_by_paddr(
 			(unsigned long)map_buffer->phy_addr);
 	}
@@ -244,13 +215,13 @@ u8 *vcd_pmem_get_physical(struct video_client_ctx *client_ctx,
 		return (u8 *) phy_addr;
 	} else {
 		VCD_MSG_ERROR("Couldn't get physical address");
-		show_mem(SHOW_MEM_FILTER_NODES);
 
 		return NULL;
 	}
 
 }
 
+#ifdef CONFIG_MSM_MULTIMEDIA_USE_ION
 u32 vcd_get_ion_flag(struct video_client_ctx *client_ctx,
 			  unsigned long kernel_vaddr,
 			struct ion_handle **buff_ion_handle)
@@ -286,6 +257,7 @@ u32 vcd_get_ion_flag(struct video_client_ctx *client_ctx,
 	}
 
 }
+#endif
 
 void vcd_reset_device_channels(struct vcd_dev_ctxt *dev_ctxt)
 {
@@ -622,8 +594,10 @@ u32 vcd_set_buffer_internal(
 {
 	struct vcd_buffer_entry *buf_entry;
 	u8 *physical;
+#ifdef CONFIG_MSM_MULTIMEDIA_USE_ION
 	u32 ion_flag = 0;
 	struct ion_handle *buff_handle = NULL;
+#endif
 
 	buf_entry = vcd_find_buffer_pool_entry(buf_pool, buffer);
 	if (buf_entry) {
@@ -635,9 +609,12 @@ u32 vcd_set_buffer_internal(
 	physical = (u8 *) vcd_pmem_get_physical(
 		cctxt->client_data, (unsigned long)buffer);
 
+#ifdef CONFIG_MSM_MULTIMEDIA_USE_ION
 	ion_flag = vcd_get_ion_flag(cctxt->client_data,
 				(unsigned long)buffer,
 				&buff_handle);
+#endif
+
 	if (!physical) {
 		VCD_MSG_ERROR("Couldn't get physical address");
 		return VCD_ERR_BAD_POINTER;
@@ -660,8 +637,10 @@ u32 vcd_set_buffer_internal(
 
 	buf_entry->frame.virtual = buf_entry->virtual;
 	buf_entry->frame.physical = buf_entry->physical;
+#ifdef CONFIG_MSM_MULTIMEDIA_USE_ION
 	buf_entry->frame.ion_flag = ion_flag;
 	buf_entry->frame.buff_ion_handle = buff_handle;
+#endif
 
 	buf_pool->validated++;
 
@@ -767,14 +746,13 @@ u32 vcd_free_one_buffer_internal(
 
 	buf_entry = vcd_find_buffer_pool_entry(buf_pool, buffer);
 	if (!buf_entry) {
-		VCD_MSG_ERROR("Buffer addr %p not found. Can't free buffer, buffer_type: %d",
-				buffer, buffer_type);
+		VCD_MSG_ERROR("Buffer addr %p not found. Can't free buffer",
+				  buffer);
 
 		return VCD_ERR_ILLEGAL_PARM;
 	}
 	if (buf_entry->in_use) {
-		VCD_MSG_ERROR("Buffer is in use and is not flushed: %p, %d\n",
-			buf_entry, buf_entry->in_use);
+		VCD_MSG_ERROR("\n Buffer is in use and is not flushed");
 		return VCD_ERR_ILLEGAL_OP;
 	}
 
@@ -922,17 +900,6 @@ struct vcd_buffer_entry *vcd_find_buffer_pool_entry
 	u32 i;
 	u32 found = false;
 
-	if (!pool) {
-		pr_info("[VID] %s: pool is NULL\n", __func__);
-		show_mem(SHOW_MEM_FILTER_NODES);
-		return NULL;
-	}
-	if (!(pool->entries)) {
-		pr_info("[VID] %s: pool->entries is NULL\n", __func__);
-		show_mem(SHOW_MEM_FILTER_NODES);
-		return NULL;
-	}
-
 	for (i = 0; i <= pool->count && !found; i++) {
 		if (pool->entries[i].virtual == addr)
 			found = true;
@@ -984,6 +951,7 @@ struct vcd_buffer_entry *vcd_buffer_pool_entry_de_q
 		list_del(&entry->list);
 		pool->q_len--;
 	}
+
 	return entry;
 }
 
@@ -1083,7 +1051,6 @@ u32 vcd_flush_buffers(struct vcd_clnt_ctxt *cctxt, u32 mode)
 {
 	u32 rc = VCD_S_SUCCESS;
 	struct vcd_buffer_entry *buf_entry;
-	struct vcd_buffer_entry *orig_frame = NULL;
 
 	VCD_MSG_LOW("vcd_flush_buffers:");
 
@@ -1107,19 +1074,9 @@ u32 vcd_flush_buffers(struct vcd_clnt_ctxt *cctxt, u32 mode)
 							 vcd_frame_data),
 						cctxt,
 						cctxt->client_data);
-				orig_frame = vcd_find_buffer_pool_entry(
-						&cctxt->in_buf_pool,
-						buf_entry->virtual);
 				}
 
-			if (orig_frame) {
-				orig_frame->in_use--;
-				if (orig_frame != buf_entry)
-					kfree(buf_entry);
-			} else {
-				buf_entry->in_use = false;
-				VCD_MSG_ERROR("Original frame not found in buffer pool\n");
-			}
+			buf_entry->in_use = false;
 			VCD_BUFFERPOOL_INUSE_DECREMENT(
 				cctxt->in_buf_pool.in_use);
 			buf_entry = NULL;
@@ -1174,7 +1131,6 @@ u32 vcd_init_client_context(struct vcd_clnt_ctxt *cctxt)
 	cctxt->bframe = 0;
 	cctxt->cmd_q.pending_cmd = VCD_CMD_NONE;
 	cctxt->status.last_evt = VCD_EVT_RESP_BASE;
-	cctxt->num_slices = 1;
 	return rc;
 }
 
@@ -1267,7 +1223,7 @@ u32 vcd_validate_driver_handle(
 	driver_handle--;
 
 	if (driver_handle < 0 ||
-		driver_handle >= VCD_DRIVER_CLIENTS_MAX ||
+		driver_handle >= VCD_DRIVER_INSTANCE_MAX ||
 		!dev_ctxt->driver_ids[driver_handle]) {
 		return false;
 	} else {
@@ -1346,7 +1302,6 @@ u32 vcd_submit_cmd_sess_start(struct vcd_transc *transc)
 		}
 
 	} else {
-		vcd_set_num_slices(transc->cctxt);
 		rc = ddl_encode_start(transc->cctxt->ddl_handle,
 					  (void *)transc);
 	}
@@ -1545,11 +1500,8 @@ u32 vcd_submit_frame(struct vcd_dev_ctxt *dev_ctxt,
 	struct vcd_buffer_entry *op_buf_entry = NULL;
 	u32 rc = VCD_S_SUCCESS;
 	u32 evcode = 0;
-	u32 perf_level = 0;
-	int decodeTime = 0;
 	struct ddl_frame_data_tag ddl_ip_frm;
-	struct ddl_frame_data_tag *ddl_op_frm;
-	u32 out_buf_cnt = 0;
+	struct ddl_frame_data_tag ddl_op_frm;
 
 	VCD_MSG_LOW("vcd_submit_frame:");
 	cctxt = transc->cctxt;
@@ -1561,62 +1513,34 @@ u32 vcd_submit_frame(struct vcd_dev_ctxt *dev_ctxt,
 	transc->flags = ip_frm_entry->flags;
 	ip_frm_entry->ip_frm_tag = (u32) transc;
 	memset(&ddl_ip_frm, 0, sizeof(ddl_ip_frm));
+	memset(&ddl_op_frm, 0, sizeof(ddl_op_frm));
 	if (cctxt->decoding) {
-		decodeTime = ddl_get_core_decode_proc_time(cctxt->ddl_handle);
-		if (decodeTime > MAX_DEC_TIME) {
-			if (res_trk_get_curr_perf_level(&perf_level)) {
-				vcd_update_decoder_perf_level(dev_ctxt,
-				   res_trk_estimate_perf_level(perf_level));
-				ddl_reset_avg_dec_time(cctxt->ddl_handle);
-			} else
-				VCD_MSG_ERROR("%s(): retrieve curr_perf_level"
-						"returned FALSE\n", __func__);
-		}
 		evcode = CLIENT_STATE_EVENT_NUMBER(decode_frame);
 		ddl_ip_frm.vcd_frm = *ip_frm_entry;
 		rc = ddl_decode_frame(cctxt->ddl_handle, &ddl_ip_frm,
-							(void *) transc);
+							   (void *) transc);
 	} else {
-		ddl_op_frm = (struct ddl_frame_data_tag *)
-			kmalloc((sizeof(struct ddl_frame_data_tag) *
-			VCD_ENC_MAX_OUTBFRS_PER_FRAME), GFP_KERNEL);
-		if (!ddl_op_frm) {
-			VCD_MSG_ERROR("Memory allocation failure");
-			return VCD_ERR_ALLOC_FAIL;
-		}
-		memset(ddl_op_frm, 0, (sizeof(struct ddl_frame_data_tag) *
-			VCD_ENC_MAX_OUTBFRS_PER_FRAME));
-		for (out_buf_cnt = 0; out_buf_cnt < cctxt->num_slices ;
-				out_buf_cnt++) {
-			op_buf_entry = vcd_buffer_pool_entry_de_q(
-				&cctxt->out_buf_pool);
-			if (!op_buf_entry) {
-				VCD_MSG_ERROR("Sched provided frame when no"
-					"op buffer was present");
-				rc = VCD_ERR_FAIL;
-				break;
-			}
+		op_buf_entry = vcd_buffer_pool_entry_de_q(
+			&cctxt->out_buf_pool);
+		if (!op_buf_entry) {
+			VCD_MSG_ERROR("Sched provided frame when no"
+				"op buffer was present");
+			rc = VCD_ERR_FAIL;
+		} else {
 			op_buf_entry->in_use = true;
 			cctxt->out_buf_pool.in_use++;
-			ddl_op_frm[out_buf_cnt].vcd_frm = op_buf_entry->frame;
-			VCD_MSG_LOW("%s : buffer_cnt = %d framebfr(virtual)"
-				" 0x%p", __func__, out_buf_cnt,
-				op_buf_entry->frame.virtual);
-			VCD_MSG_LOW("framebfr(physical) 0x%p bfrlength %d",
-				op_buf_entry->frame.physical,
-				op_buf_entry->frame.alloc_len);
-		}
-		ddl_ip_frm.vcd_frm = *ip_frm_entry;
-		ddl_ip_frm.frm_delta =
-			vcd_calculate_frame_delta(cctxt,
-				ip_frm_entry);
-		evcode = CLIENT_STATE_EVENT_NUMBER(encode_frame);
+			ddl_ip_frm.vcd_frm = *ip_frm_entry;
+			ddl_ip_frm.frm_delta =
+				vcd_calculate_frame_delta(cctxt,
+					ip_frm_entry);
 
-		if (!VCD_FAILED(rc)) {
+			ddl_op_frm.vcd_frm = op_buf_entry->frame;
+
+			evcode = CLIENT_STATE_EVENT_NUMBER(encode_frame);
+
 			rc = ddl_encode_frame(cctxt->ddl_handle,
-				&ddl_ip_frm, &ddl_op_frm[0], (void *) transc);
+				&ddl_ip_frm, &ddl_op_frm, (void *) transc);
 		}
-		kfree(ddl_op_frm);
 	}
 	ip_frm_entry->ip_frm_tag = transc->ip_frm_tag;
 	if (!VCD_FAILED(rc)) {
@@ -1893,9 +1817,16 @@ u32 vcd_setup_with_ddl_capabilities(struct vcd_dev_ctxt *dev_ctxt)
 		Prop_hdr.prop_id = DDL_I_CAPABILITY;
 		Prop_hdr.sz = sizeof(capability);
 
+		/*
+		** Since this is underlying core's property we don't need a
+		** ddl client handle.
+		*/
 		rc = ddl_get_property(NULL, &Prop_hdr, &capability);
 
 		if (!VCD_FAILED(rc)) {
+			/*
+			** Allocate the transaction table.
+			*/
 			dev_ctxt->trans_tbl_size =
 				(VCD_MAX_CLIENT_TRANSACTIONS *
 				capability.max_num_client) +
@@ -1944,21 +1875,17 @@ struct vcd_transc *vcd_get_free_trans_tbl_entry
 	} else {
 		memset(&dev_ctxt->trans_tbl[i], 0,
 			   sizeof(struct vcd_transc));
+
 		dev_ctxt->trans_tbl[i].in_use = true;
-		VCD_MSG_LOW("%s: Get transc = 0x%x, in_use = %u\n",
-			__func__, (u32)(&dev_ctxt->trans_tbl[i]),
-			dev_ctxt->trans_tbl[i].in_use);
+
 		return &dev_ctxt->trans_tbl[i];
 	}
 }
 
 void vcd_release_trans_tbl_entry(struct vcd_transc *trans_entry)
 {
-	if (trans_entry) {
+	if (trans_entry)
 		trans_entry->in_use = false;
-		VCD_MSG_LOW("%s: Free transc = 0x%x, in_use = %u\n",
-			__func__, (u32)trans_entry, trans_entry->in_use);
-	}
 }
 
 u32 vcd_handle_input_done(
@@ -1968,9 +1895,7 @@ u32 vcd_handle_input_done(
 	struct vcd_transc *transc;
 	struct ddl_frame_data_tag *frame =
 		(struct ddl_frame_data_tag *) payload;
-	struct vcd_buffer_entry *orig_frame = NULL;
 	u32 rc;
-	VCD_MSG_LOW("%s\n", __func__);
 
 	if (!cctxt->status.frame_submitted &&
 		!cctxt->status.frame_delayed) {
@@ -1984,14 +1909,7 @@ u32 vcd_handle_input_done(
 	VCD_FAILED_RETURN(rc, "Bad input done payload");
 
 	transc = (struct vcd_transc *)frame->vcd_frm.ip_frm_tag;
-	orig_frame = vcd_find_buffer_pool_entry(&cctxt->in_buf_pool,
-					 transc->ip_buf_entry->virtual);
-	
-	if (!orig_frame) {
-		VCD_MSG_ERROR("Bad buffer addr: %p", transc->ip_buf_entry->virtual);
-		return VCD_ERR_FAIL;
-	}
-	
+
 	if ((transc->ip_buf_entry->frame.virtual !=
 		 frame->vcd_frm.virtual)
 		|| !transc->ip_buf_entry->in_use) {
@@ -2009,28 +1927,16 @@ u32 vcd_handle_input_done(
 			sizeof(struct vcd_frame_data),
 			cctxt, cctxt->client_data);
 
-	orig_frame->in_use--;
+	transc->ip_buf_entry->in_use = false;
 	VCD_BUFFERPOOL_INUSE_DECREMENT(cctxt->in_buf_pool.in_use);
-
-	if (cctxt->decoding && orig_frame->in_use) {
-		VCD_MSG_ERROR("When decoding same input buffer not "
-				"supposed to be queued multiple times");
-		return VCD_ERR_FAIL;
-	}
-
-	if (orig_frame != transc->ip_buf_entry)
-		kfree(transc->ip_buf_entry);
 	transc->ip_buf_entry = NULL;
 	transc->input_done = true;
 
-	if (transc->input_done && transc->frame_done) {
-		VCD_MSG_LOW("%s Calling vcd_release_trans_tbl_entry\n",
-		__func__);
+	if (transc->input_done && transc->frame_done)
 		vcd_release_trans_tbl_entry(transc);
-	}
 
 	if (VCD_FAILED(status)) {
-		VCD_MSG_ERROR("INPUT_DONE returned err = 0x%x", status);
+		pr_info("INPUT_DONE returned err = 0x%x", status);
 		vcd_handle_input_done_failed(cctxt, transc);
 	} else
 		cctxt->status.mask |= VCD_FIRST_IP_DONE;
@@ -2066,7 +1972,6 @@ u32 vcd_handle_input_done_in_eos(
 		(struct ddl_frame_data_tag *) payload;
 	u32 rc = VCD_ERR_FAIL, codec_config = false;
 	u32 core_type = res_trk_get_core_type();
-	VCD_MSG_LOW("%s\n", __func__);
 	rc = vcd_validate_io_done_pyld(cctxt, payload, status);
 	if (rc == VCD_ERR_CLIENT_FATAL)
 		vcd_handle_clnt_fatal_input_done(cctxt, frame->frm_trans_end);
@@ -2082,12 +1987,10 @@ u32 vcd_handle_input_done_in_eos(
 		transc->in_use = true;
 		if ((codec_config &&
 			 (status != VCD_ERR_BITSTREAM_ERR)) ||
-			(codec_config && (status == VCD_ERR_BITSTREAM_ERR) &&
+			((status == VCD_ERR_BITSTREAM_ERR) &&
 			 !(cctxt->status.mask & VCD_FIRST_IP_DONE) &&
-			(core_type == VCD_CORE_720P))) {
-			VCD_MSG_HIGH("handle EOS for codec config");
+			 (core_type == VCD_CORE_720P)))
 			vcd_handle_eos_done(cctxt, transc, VCD_S_SUCCESS);
-		}
 	}
 	return rc;
 }
@@ -2118,8 +2021,8 @@ u32 vcd_validate_io_done_pyld(
 		rc = VCD_ERR_CLIENT_FATAL;
 
 	if (VCD_FAILED(rc)) {
-		VCD_MSG_FATAL("vcd_validate_io_done_pyld: "\
-			"invalid transaction 0x%x", (u32)transc);
+		VCD_MSG_FATAL(
+			"vcd_validate_io_done_pyld: invalid transaction");
 	} else if (!frame->vcd_frm.virtual &&
 		status != VCD_ERR_INTRLCD_FIELD_DROP)
 		rc = VCD_ERR_BAD_POINTER;
@@ -2174,7 +2077,6 @@ u32 vcd_handle_output_required(struct vcd_clnt_ctxt
 	struct ddl_frame_data_tag *frame =
 		(struct ddl_frame_data_tag *)payload;
 	u32 rc = VCD_S_SUCCESS;
-	VCD_MSG_LOW("%s\n", __func__);
 
 	if (!cctxt->status.frame_submitted &&
 		!cctxt->status.frame_delayed) {
@@ -2235,7 +2137,6 @@ struct vcd_clnt_ctxt *cctxt, void *payload)
 	struct vcd_transc *transc;
 	struct ddl_frame_data_tag *frame =
 		(struct ddl_frame_data_tag *)payload;
-	VCD_MSG_LOW("%s\n", __func__);
 
 	rc = vcd_validate_io_done_pyld(cctxt, payload, VCD_S_SUCCESS);
 	if (rc == VCD_ERR_CLIENT_FATAL)
@@ -2269,7 +2170,6 @@ u32 vcd_handle_frame_done(
 	struct vcd_transc *transc;
 	u32 rc;
 	s64 time_stamp;
-	VCD_MSG_LOW("%s\n", __func__);
 
 	rc = vcd_validate_io_done_pyld(cctxt, payload, status);
 	if (rc == VCD_ERR_CLIENT_FATAL)
@@ -2359,7 +2259,7 @@ u32 vcd_handle_frame_done_in_eos(
 	struct ddl_frame_data_tag *frame =
 		(struct ddl_frame_data_tag *) payload;
 	u32 rc = VCD_S_SUCCESS;
-	VCD_MSG_LOW("%s\n", __func__);
+	VCD_MSG_LOW("vcd_handle_frame_done_in_eos:");
 	rc = vcd_validate_io_done_pyld(cctxt, payload, status);
 	if (rc == VCD_ERR_CLIENT_FATAL)
 		vcd_handle_clnt_fatal(cctxt, frame->frm_trans_end);
@@ -2440,7 +2340,6 @@ u32 vcd_handle_first_fill_output_buffer_for_enc(
 	u32 rc, seqhdr_present = 0;
 	struct vcd_property_hdr prop_hdr;
 	struct vcd_sequence_hdr seq_hdr;
-	struct vcd_property_sps_pps_for_idr_enable idr_enable;
 	struct vcd_property_codec codec;
 	*handled = true;
 	prop_hdr.prop_id = DDL_I_SEQHDR_PRESENT;
@@ -2457,51 +2356,29 @@ u32 vcd_handle_first_fill_output_buffer_for_enc(
 	rc = ddl_get_property(cctxt->ddl_handle, &prop_hdr, &codec);
 	if (!VCD_FAILED(rc)) {
 		if (codec.codec != VCD_CODEC_H263) {
-			if (!cctxt->secure) {
-				prop_hdr.prop_id = VCD_I_SEQ_HEADER;
-				prop_hdr.sz = sizeof(struct vcd_sequence_hdr);
-				seq_hdr.sequence_header = frm_entry->virtual;
-				seq_hdr.sequence_header_len =
-					frm_entry->alloc_len;
-				rc = ddl_get_property(cctxt->ddl_handle,
-						&prop_hdr, &seq_hdr);
-				if (!VCD_FAILED(rc)) {
-					frm_entry->data_len =
-						seq_hdr.sequence_header_len;
-					frm_entry->time_stamp = 0;
-					frm_entry->flags |=
-						VCD_FRAME_FLAG_CODECCONFIG;
-				} else
-					VCD_MSG_ERROR("rc = 0x%x. Failed:"
-							"ddl_get_property: VCD_I_SEQ_HEADER",
-							rc);
-			} else {
-				prop_hdr.prop_id = VCD_I_ENABLE_SPS_PPS_FOR_IDR;
-				prop_hdr.sz = sizeof(idr_enable);
-				rc = ddl_get_property(cctxt->ddl_handle,
-						&prop_hdr, &idr_enable);
-				if (!VCD_FAILED(rc)) {
-					if (!idr_enable.
-						sps_pps_for_idr_enable_flag) {
-						VCD_MSG_ERROR("SPS/PPS per IDR "
-							"needs to be enabled");
-						rc = VCD_ERR_BAD_STATE;
-					} else {
-						
-						frm_entry->data_len = 0;
-						frm_entry->time_stamp = 0;
-						frm_entry->flags = 0;
-					}
-				}
-
-			}
-
-			if (!VCD_FAILED(rc))
+			prop_hdr.prop_id = VCD_I_SEQ_HEADER;
+			prop_hdr.sz = sizeof(struct vcd_sequence_hdr);
+			seq_hdr.sequence_header = frm_entry->virtual;
+			seq_hdr.sequence_header_len =
+				frm_entry->alloc_len;
+			rc = ddl_get_property(cctxt->ddl_handle,
+				&prop_hdr, &seq_hdr);
+			if (!VCD_FAILED(rc)) {
+				frm_entry->data_len =
+					seq_hdr.sequence_header_len;
+				frm_entry->time_stamp = 0;
+				frm_entry->flags |=
+					VCD_FRAME_FLAG_CODECCONFIG;
 				cctxt->callback(VCD_EVT_RESP_OUTPUT_DONE,
-						VCD_S_SUCCESS, frm_entry,
-						sizeof(struct vcd_frame_data),
-						cctxt,
-						cctxt->client_data);
+					VCD_S_SUCCESS, frm_entry,
+					sizeof(struct vcd_frame_data),
+					cctxt,
+					cctxt->client_data);
+			} else
+			VCD_MSG_ERROR(
+				"rc = 0x%x. Failed:\
+				ddl_get_property: VCD_I_SEQ_HEADER",
+				rc);
 		} else
 			VCD_MSG_LOW("Codec Type is H.263\n");
 	} else
@@ -2771,7 +2648,7 @@ u32 vcd_handle_input_frame(
 	 struct vcd_frame_data *input_frame)
 {
 	struct vcd_dev_ctxt *dev_ctxt = cctxt->dev_ctxt;
-	struct vcd_buffer_entry *buf_entry, *orig_frame;
+	struct vcd_buffer_entry *buf_entry;
 	struct vcd_frame_data *frm_entry;
 	u32 rc = VCD_S_SUCCESS;
 	u32 eos_handled = false;
@@ -2817,41 +2694,18 @@ u32 vcd_handle_input_frame(
 	}
 	VCD_FAILED_RETURN(rc, "Failed: First frame handling");
 
-	orig_frame = vcd_find_buffer_pool_entry(&cctxt->in_buf_pool,
+	buf_entry = vcd_find_buffer_pool_entry(&cctxt->in_buf_pool,
 						 input_frame->virtual);
-	if (!orig_frame) {
+	if (!buf_entry) {
 		VCD_MSG_ERROR("Bad buffer addr: %p", input_frame->virtual);
 		return VCD_ERR_FAIL;
 	}
 
-	if (orig_frame->in_use) {
-		if (cctxt->decoding) {
-			VCD_MSG_ERROR("An inuse input frame is being "
-					"re-queued to scheduler");
-			return VCD_ERR_FAIL;
-		}
-
-		buf_entry = kzalloc(sizeof(*buf_entry), GFP_KERNEL);
-		if (!buf_entry) {
-			VCD_MSG_ERROR("Unable to alloc memory");
-			return VCD_ERR_FAIL;
-		}
-
-		INIT_LIST_HEAD(&buf_entry->sched_list);
-		INIT_LIST_HEAD(&buf_entry->list);
-		buf_entry->list.next = LIST_POISON1;
-		buf_entry->list.prev = LIST_POISON2;
-
-		buf_entry->valid = orig_frame->valid;
-		buf_entry->alloc = orig_frame->alloc;
-		buf_entry->virtual = orig_frame->virtual;
-		buf_entry->physical = orig_frame->physical;
-		buf_entry->sz = orig_frame->sz;
-		buf_entry->allocated = orig_frame->allocated;
-		buf_entry->in_use = 1; 
-		buf_entry->frame = orig_frame->frame;
-	} else
-		buf_entry = orig_frame;
+	if (buf_entry->in_use) {
+		VCD_MSG_ERROR("An inuse input frame is being"
+			"re-queued to scheduler");
+		return VCD_ERR_FAIL;
+	}
 
 	if (input_frame->alloc_len > buf_entry->sz) {
 		VCD_MSG_ERROR("Bad buffer Alloc_len %d, Actual sz=%d",
@@ -2880,7 +2734,7 @@ u32 vcd_handle_input_frame(
 		cctxt->sched_clnt_hdl, buf_entry, true);
 	VCD_FAILED_RETURN(rc, "Failed: vcd_sched_queue_buffer");
 
-	orig_frame->in_use++;
+	buf_entry->in_use = true;
 	cctxt->in_buf_pool.in_use++;
 	vcd_try_submit_frame(dev_ctxt);
 	return rc;
@@ -3034,32 +2888,6 @@ u32 vcd_set_frame_rate(
 	return rc;
 }
 
-u32 vcd_req_perf_level(
-	struct vcd_clnt_ctxt *cctxt,
-	 struct vcd_property_perf_level *perf_level)
-{
-	u32 rc;
-	
-	s32 res_trk_perf_level;
-	
-	if (!perf_level) {
-		VCD_MSG_ERROR("Invalid parameters\n");
-		return -EINVAL;
-	}
-	res_trk_perf_level = get_res_trk_perf_level(perf_level->level);
-	if (res_trk_perf_level < 0) {
-		rc = -ENOTSUPP;
-		goto perf_level_not_supp;
-	}
-	rc = vcd_set_perf_level(cctxt->dev_ctxt, res_trk_perf_level);
-	if (!rc) {
-		cctxt->reqd_perf_lvl = res_trk_perf_level;
-		cctxt->perf_set_by_client = 1;
-	}
-perf_level_not_supp:
-	return rc;
-}
-
 u32 vcd_set_frame_size(
 	struct vcd_clnt_ctxt *cctxt,
 	 struct vcd_property_frame_size *frm_size)
@@ -3122,15 +2950,13 @@ u32 vcd_calculate_frame_delta(
 	u32 frm_delta;
 	u64 temp, max = ~((u64)0);
 
-	if (cctxt->time_frame_delta)
-		temp = cctxt->time_frame_delta;
-	else if (frame->time_stamp >= cctxt->status.prev_ts)
+	if (frame->time_stamp >= cctxt->status.prev_ts)
 		temp = frame->time_stamp - cctxt->status.prev_ts;
 	else
 		temp = (max - cctxt->status.prev_ts) +
 			frame->time_stamp;
 
-	VCD_MSG_LOW("Curr_ts=%lld  Prev_ts=%lld Diff=%llu\n",
+	VCD_MSG_LOW("Curr_ts=%lld  Prev_ts=%lld Diff=%llu",
 			frame->time_stamp, cctxt->status.prev_ts, temp);
 
 	temp *= cctxt->time_resoln;
@@ -3441,25 +3267,4 @@ void vcd_handle_ind_info_output_reconfig(
 		cctxt->callback(VCD_EVT_IND_INFO_OUTPUT_RECONFIG, status, NULL,
 		 0, cctxt, cctxt->client_data);
 	}
-}
-
-u32 vcd_set_num_slices(struct vcd_clnt_ctxt *cctxt)
-{
-	struct vcd_property_hdr prop_hdr;
-	struct vcd_property_slice_delivery_info slice_delivery_info;
-	u32 rc = VCD_S_SUCCESS;
-	prop_hdr.prop_id = VCD_I_SLICE_DELIVERY_MODE;
-	prop_hdr.sz =
-		sizeof(struct vcd_property_slice_delivery_info);
-	rc = ddl_get_property(cctxt->ddl_handle, &prop_hdr,
-				&slice_delivery_info);
-	VCD_FAILED_RETURN(rc, "Failed: Get VCD_I_SLICE_DELIVERY_MODE");
-	if (slice_delivery_info.enable) {
-		cctxt->num_slices = slice_delivery_info.num_slices;
-		VCD_MSG_LOW("%s slice delivery mode num_slices = %u\n",
-					__func__, cctxt->num_slices);
-	} else {
-		cctxt->num_slices = 1;
-	}
-	return rc;
 }

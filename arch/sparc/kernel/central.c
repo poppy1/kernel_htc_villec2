@@ -6,7 +6,6 @@
 #include <linux/kernel.h>
 #include <linux/types.h>
 #include <linux/slab.h>
-#include <linux/export.h>
 #include <linux/string.h>
 #include <linux/init.h>
 #include <linux/of_device.h>
@@ -269,4 +268,4 @@ static int __init sunfire_init(void)
 	return 0;
 }
 
-fs_initcall(sunfire_init);
+subsys_initcall(sunfire_init);

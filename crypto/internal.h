@@ -27,6 +27,7 @@
 #include <linux/slab.h>
 #include <linux/fips.h>
 
+/* Crypto notification events. */
 enum {
 	CRYPTO_MSG_ALG_REQUEST,
 	CRYPTO_MSG_ALG_REGISTER,
@@ -85,9 +86,6 @@ struct crypto_alg *crypto_larval_lookup(const char *name, u32 type, u32 mask);
 void crypto_larval_error(const char *name, u32 type, u32 mask);
 void crypto_alg_tested(const char *name, int err);
 
-void crypto_remove_spawns(struct crypto_alg *alg, struct list_head *list,
-			  struct crypto_alg *nalg);
-void crypto_remove_final(struct list_head *list);
 void crypto_shoot_alg(struct crypto_alg *alg);
 struct crypto_tfm *__crypto_alloc_tfm(struct crypto_alg *alg, u32 type,
 				      u32 mask);
@@ -139,5 +137,5 @@ static inline void crypto_notify(unsigned long val, void *v)
 	blocking_notifier_call_chain(&crypto_chain, val, v);
 }
 
-#endif	
+#endif	/* _CRYPTO_INTERNAL_H */
 

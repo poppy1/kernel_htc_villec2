@@ -22,9 +22,7 @@
 #ifndef _LINUX_PSTORE_H
 #define _LINUX_PSTORE_H
 
-#include <linux/time.h>
-#include <linux/kmsg_dump.h>
-
+/* types */
 enum pstore_type_id {
 	PSTORE_TYPE_DMESG	= 0,
 	PSTORE_TYPE_MCE		= 1,
@@ -34,31 +32,31 @@ enum pstore_type_id {
 struct pstore_info {
 	struct module	*owner;
 	char		*name;
-	spinlock_t	buf_lock;	
+	struct mutex	buf_mutex;	/* serialize access to 'buf' */
 	char		*buf;
 	size_t		bufsize;
-	struct mutex	read_mutex;	
 	int		(*open)(struct pstore_info *psi);
 	int		(*close)(struct pstore_info *psi);
 	ssize_t		(*read)(u64 *id, enum pstore_type_id *type,
-			struct timespec *time, char **buf,
-			struct pstore_info *psi);
-	int		(*write)(enum pstore_type_id type,
-			enum kmsg_dump_reason reason, u64 *id,
-			unsigned int part, size_t size, struct pstore_info *psi);
-	int		(*erase)(enum pstore_type_id type, u64 id,
-			struct pstore_info *psi);
-	void		*data;
+			struct timespec *time);
+	u64		(*write)(enum pstore_type_id type, size_t size);
+	int		(*erase)(u64 id);
 };
 
 #ifdef CONFIG_PSTORE
 extern int pstore_register(struct pstore_info *);
+extern int pstore_write(enum pstore_type_id type, char *buf, size_t size);
 #else
 static inline int
 pstore_register(struct pstore_info *psi)
 {
 	return -ENODEV;
 }
+static inline int
+pstore_write(enum pstore_type_id type, char *buf, size_t size)
+{
+	return -ENODEV;
+}
 #endif
 
-#endif 
+#endif /*_LINUX_PSTORE_H*/

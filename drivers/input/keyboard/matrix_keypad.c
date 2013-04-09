@@ -2,7 +2,6 @@
  *  GPIO driven matrix keyboard driver
  *
  *  Copyright (c) 2008 Marek Vasut <marek.vasut@gmail.com>
- *  Copyright (c) 2012, Code Aurora Forum. All rights reserved.
  *
  *  Based on corgikbd.c
  *
@@ -35,12 +34,17 @@ struct matrix_keypad {
 
 	uint32_t last_key_state[MATRIX_MAX_COLS];
 	struct delayed_work work;
-	struct mutex lock;
+	spinlock_t lock;
 	bool scan_pending;
 	bool stopped;
 	bool gpio_all_disabled;
 };
 
+/*
+ * NOTE: normally the GPIO has to be put into HiZ when de-activated to cause
+ * minmal side effect when scanning other columns, here it is configured to
+ * be input, and it should work on most platforms.
+ */
 static void __activate_col(const struct matrix_keypad_platform_data *pdata,
 			   int col, bool on)
 {
@@ -105,6 +109,9 @@ static void disable_row_irqs(struct matrix_keypad *keypad)
 	}
 }
 
+/*
+ * This gets the keys from keyboard and reports it to input subsystem
+ */
 static void matrix_keypad_scan(struct work_struct *work)
 {
 	struct matrix_keypad *keypad =
@@ -114,12 +121,12 @@ static void matrix_keypad_scan(struct work_struct *work)
 	uint32_t new_state[MATRIX_MAX_COLS];
 	int row, col, code;
 
-	
+	/* de-activate all columns for scanning */
 	activate_all_cols(pdata, false);
 
 	memset(new_state, 0, sizeof(new_state));
 
-	
+	/* assert each column and read the row status out */
 	for (col = 0; col < pdata->num_col_gpios; col++) {
 
 		activate_col(pdata, col, true);
@@ -155,18 +162,25 @@ static void matrix_keypad_scan(struct work_struct *work)
 
 	activate_all_cols(pdata, true);
 
-	mutex_lock(&keypad->lock);
+	/* Enable IRQs again */
+	spin_lock_irq(&keypad->lock);
 	keypad->scan_pending = false;
 	enable_row_irqs(keypad);
-	mutex_unlock(&keypad->lock);
+	spin_unlock_irq(&keypad->lock);
 }
 
 static irqreturn_t matrix_keypad_interrupt(int irq, void *id)
 {
 	struct matrix_keypad *keypad = id;
+	unsigned long flags;
 
-	mutex_lock(&keypad->lock);
+	spin_lock_irqsave(&keypad->lock, flags);
 
+	/*
+	 * See if another IRQ beaten us to it and scheduled the
+	 * scan already. In that case we should not try to
+	 * disable IRQs again.
+	 */
 	if (unlikely(keypad->scan_pending || keypad->stopped))
 		goto out;
 
@@ -176,7 +190,7 @@ static irqreturn_t matrix_keypad_interrupt(int irq, void *id)
 		msecs_to_jiffies(keypad->pdata->debounce_ms));
 
 out:
-	mutex_unlock(&keypad->lock);
+	spin_unlock_irqrestore(&keypad->lock, flags);
 	return IRQ_HANDLED;
 }
 
@@ -187,6 +201,10 @@ static int matrix_keypad_start(struct input_dev *dev)
 	keypad->stopped = false;
 	mb();
 
+	/*
+	 * Schedule an immediate key scan to capture current key state;
+	 * columns will be activated and IRQs be enabled after the scan.
+	 */
 	schedule_delayed_work(&keypad->work, 0);
 
 	return 0;
@@ -199,6 +217,10 @@ static void matrix_keypad_stop(struct input_dev *dev)
 	keypad->stopped = true;
 	mb();
 	flush_work(&keypad->work.work);
+	/*
+	 * matrix_keypad_scan() will leave IRQs enabled;
+	 * we should disable them now.
+	 */
 	disable_row_irqs(keypad);
 }
 
@@ -282,7 +304,7 @@ static int __devinit init_matrix_gpio(struct platform_device *pdev,
 	const struct matrix_keypad_platform_data *pdata = keypad->pdata;
 	int i, err = -EINVAL;
 
-	
+	/* initialized strobe lines as outputs, activated */
 	for (i = 0; i < pdata->num_col_gpios; i++) {
 		err = gpio_request(pdata->col_gpios[i], "matrix_kbd_col");
 		if (err) {
@@ -312,22 +334,20 @@ static int __devinit init_matrix_gpio(struct platform_device *pdev,
 				matrix_keypad_interrupt,
 				pdata->clustered_irq_flags,
 				"matrix-keypad", keypad);
-		if (err < 0) {
+		if (err) {
 			dev_err(&pdev->dev,
 				"Unable to acquire clustered interrupt\n");
 			goto err_free_rows;
 		}
 	} else {
 		for (i = 0; i < pdata->num_row_gpios; i++) {
-			err = request_threaded_irq(
-					gpio_to_irq(pdata->row_gpios[i]),
-					NULL,
+			err = request_irq(gpio_to_irq(pdata->row_gpios[i]),
 					matrix_keypad_interrupt,
-					IRQF_DISABLED | IRQF_ONESHOT |
+					IRQF_DISABLED |
 					IRQF_TRIGGER_RISING |
 					IRQF_TRIGGER_FALLING,
 					"matrix-keypad", keypad);
-			if (err < 0) {
+			if (err) {
 				dev_err(&pdev->dev,
 					"Unable to acquire interrupt "
 					"for GPIO line %i\n",
@@ -337,7 +357,7 @@ static int __devinit init_matrix_gpio(struct platform_device *pdev,
 		}
 	}
 
-	
+	/* initialized as disabled - enabled by input->open */
 	disable_row_irqs(keypad);
 	return 0;
 
@@ -396,7 +416,7 @@ static int __devinit matrix_keypad_probe(struct platform_device *pdev)
 	keypad->row_shift = row_shift;
 	keypad->stopped = true;
 	INIT_DELAYED_WORK(&keypad->work, matrix_keypad_scan);
-	mutex_init(&keypad->lock);
+	spin_lock_init(&keypad->lock);
 
 	input_dev->name		= pdev->name;
 	input_dev->id.bustype	= BUS_HOST;
@@ -458,7 +478,6 @@ static int __devexit matrix_keypad_remove(struct platform_device *pdev)
 	for (i = 0; i < pdata->num_col_gpios; i++)
 		gpio_free(pdata->col_gpios[i]);
 
-	mutex_destroy(&keypad->lock);
 	input_unregister_device(keypad->input_dev);
 	platform_set_drvdata(pdev, NULL);
 	kfree(keypad->keycodes);
@@ -478,7 +497,19 @@ static struct platform_driver matrix_keypad_driver = {
 #endif
 	},
 };
-module_platform_driver(matrix_keypad_driver);
+
+static int __init matrix_keypad_init(void)
+{
+	return platform_driver_register(&matrix_keypad_driver);
+}
+
+static void __exit matrix_keypad_exit(void)
+{
+	platform_driver_unregister(&matrix_keypad_driver);
+}
+
+module_init(matrix_keypad_init);
+module_exit(matrix_keypad_exit);
 
 MODULE_AUTHOR("Marek Vasut <marek.vasut@gmail.com>");
 MODULE_DESCRIPTION("GPIO Driven Matrix Keypad Driver");

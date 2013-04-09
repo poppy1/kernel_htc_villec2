@@ -41,7 +41,6 @@
 #include <linux/delay.h>
 #include <linux/sched.h>
 #include <linux/sysrq.h>
-#include <linux/reboot.h>
 #include <linux/init.h>
 #include <linux/kgdb.h>
 #include <linux/kdb.h>
@@ -52,7 +51,8 @@
 
 #include <asm/cacheflush.h>
 #include <asm/byteorder.h>
-#include <linux/atomic.h>
+#include <asm/atomic.h>
+#include <asm/system.h>
 
 #include "debug_core.h"
 
@@ -75,8 +75,6 @@ static int			exception_level;
 struct kgdb_io		*dbg_io_ops;
 static DEFINE_SPINLOCK(kgdb_registration_lock);
 
-/* Action for the reboot notifiter, a global allow kdb to change it */
-static int kgdbreboot;
 /* kgdb console driver is loaded */
 static int kgdb_con_registered;
 /* determine if kgdb console output should be used */
@@ -98,7 +96,6 @@ static int __init opt_kgdb_con(char *str)
 early_param("kgdbcon", opt_kgdb_con);
 
 module_param(kgdb_use_con, int, 0644);
-module_param(kgdbreboot, int, 0644);
 
 /*
  * Holds information about breakpoints in a kernel. These breakpoints are
@@ -160,39 +157,37 @@ early_param("nokgdbroundup", opt_nokgdbroundup);
  * Weak aliases for breakpoint management,
  * can be overriden by architectures when needed:
  */
-int __weak kgdb_arch_set_breakpoint(struct kgdb_bkpt *bpt)
+int __weak kgdb_arch_set_breakpoint(unsigned long addr, char *saved_instr)
 {
 	int err;
 
-	err = probe_kernel_read(bpt->saved_instr, (char *)bpt->bpt_addr,
-				BREAK_INSTR_SIZE);
+	err = probe_kernel_read(saved_instr, (char *)addr, BREAK_INSTR_SIZE);
 	if (err)
 		return err;
-	err = probe_kernel_write((char *)bpt->bpt_addr,
-				 arch_kgdb_ops.gdb_bpt_instr, BREAK_INSTR_SIZE);
-	return err;
+
+	return probe_kernel_write((char *)addr, arch_kgdb_ops.gdb_bpt_instr,
+				  BREAK_INSTR_SIZE);
 }
 
-int __weak kgdb_arch_remove_breakpoint(struct kgdb_bkpt *bpt)
+int __weak kgdb_arch_remove_breakpoint(unsigned long addr, char *bundle)
 {
-	return probe_kernel_write((char *)bpt->bpt_addr,
-				  (char *)bpt->saved_instr, BREAK_INSTR_SIZE);
+	return probe_kernel_write((char *)addr,
+				  (char *)bundle, BREAK_INSTR_SIZE);
 }
 
 int __weak kgdb_validate_break_address(unsigned long addr)
 {
-	struct kgdb_bkpt tmp;
+	char tmp_variable[BREAK_INSTR_SIZE];
 	int err;
-	/* Validate setting the breakpoint and then removing it.  If the
+	/* Validate setting the breakpoint and then removing it.  In the
 	 * remove fails, the kernel needs to emit a bad message because we
 	 * are deep trouble not being able to put things back the way we
 	 * found them.
 	 */
-	tmp.bpt_addr = addr;
-	err = kgdb_arch_set_breakpoint(&tmp);
+	err = kgdb_arch_set_breakpoint(addr, tmp_variable);
 	if (err)
 		return err;
-	err = kgdb_arch_remove_breakpoint(&tmp);
+	err = kgdb_arch_remove_breakpoint(addr, tmp_variable);
 	if (err)
 		printk(KERN_ERR "KGDB: Critical breakpoint error, kernel "
 		   "memory destroyed at: %lx", addr);
@@ -236,6 +231,7 @@ static void kgdb_flush_swbreak_addr(unsigned long addr)
  */
 int dbg_activate_sw_breakpoints(void)
 {
+	unsigned long addr;
 	int error;
 	int ret = 0;
 	int i;
@@ -244,15 +240,16 @@ int dbg_activate_sw_breakpoints(void)
 		if (kgdb_break[i].state != BP_SET)
 			continue;
 
-		error = kgdb_arch_set_breakpoint(&kgdb_break[i]);
+		addr = kgdb_break[i].bpt_addr;
+		error = kgdb_arch_set_breakpoint(addr,
+				kgdb_break[i].saved_instr);
 		if (error) {
 			ret = error;
-			printk(KERN_INFO "KGDB: BP install failed: %lx",
-			       kgdb_break[i].bpt_addr);
+			printk(KERN_INFO "KGDB: BP install failed: %lx", addr);
 			continue;
 		}
 
-		kgdb_flush_swbreak_addr(kgdb_break[i].bpt_addr);
+		kgdb_flush_swbreak_addr(addr);
 		kgdb_break[i].state = BP_ACTIVE;
 	}
 	return ret;
@@ -301,6 +298,7 @@ int dbg_set_sw_break(unsigned long addr)
 
 int dbg_deactivate_sw_breakpoints(void)
 {
+	unsigned long addr;
 	int error;
 	int ret = 0;
 	int i;
@@ -308,14 +306,15 @@ int dbg_deactivate_sw_breakpoints(void)
 	for (i = 0; i < KGDB_MAX_BREAKPOINTS; i++) {
 		if (kgdb_break[i].state != BP_ACTIVE)
 			continue;
-		error = kgdb_arch_remove_breakpoint(&kgdb_break[i]);
+		addr = kgdb_break[i].bpt_addr;
+		error = kgdb_arch_remove_breakpoint(addr,
+					kgdb_break[i].saved_instr);
 		if (error) {
-			printk(KERN_INFO "KGDB: BP remove failed: %lx\n",
-			       kgdb_break[i].bpt_addr);
+			printk(KERN_INFO "KGDB: BP remove failed: %lx\n", addr);
 			ret = error;
 		}
 
-		kgdb_flush_swbreak_addr(kgdb_break[i].bpt_addr);
+		kgdb_flush_swbreak_addr(addr);
 		kgdb_break[i].state = BP_SET;
 	}
 	return ret;
@@ -349,6 +348,7 @@ int kgdb_isremovedbreak(unsigned long addr)
 
 int dbg_remove_all_break(void)
 {
+	unsigned long addr;
 	int error;
 	int i;
 
@@ -356,10 +356,12 @@ int dbg_remove_all_break(void)
 	for (i = 0; i < KGDB_MAX_BREAKPOINTS; i++) {
 		if (kgdb_break[i].state != BP_ACTIVE)
 			goto setundefined;
-		error = kgdb_arch_remove_breakpoint(&kgdb_break[i]);
+		addr = kgdb_break[i].bpt_addr;
+		error = kgdb_arch_remove_breakpoint(addr,
+				kgdb_break[i].saved_instr);
 		if (error)
 			printk(KERN_ERR "KGDB: breakpoint remove failed: %lx\n",
-			       kgdb_break[i].bpt_addr);
+			   addr);
 setundefined:
 		kgdb_break[i].state = BP_UNDEFINED;
 	}
@@ -782,33 +784,6 @@ void __init dbg_late_init(void)
 	kdb_init(KDB_INIT_FULL);
 }
 
-static int
-dbg_notify_reboot(struct notifier_block *this, unsigned long code, void *x)
-{
-	/*
-	 * Take the following action on reboot notify depending on value:
-	 *    1 == Enter debugger
-	 *    0 == [the default] detatch debug client
-	 *   -1 == Do nothing... and use this until the board resets
-	 */
-	switch (kgdbreboot) {
-	case 1:
-		kgdb_breakpoint();
-	case -1:
-		goto done;
-	}
-	if (!dbg_kdb_mode)
-		gdbstub_exit(code);
-done:
-	return NOTIFY_DONE;
-}
-
-static struct notifier_block dbg_reboot_notifier = {
-	.notifier_call		= dbg_notify_reboot,
-	.next			= NULL,
-	.priority		= INT_MAX,
-};
-
 static void kgdb_register_callbacks(void)
 {
 	if (!kgdb_io_module_registered) {
@@ -816,7 +791,6 @@ static void kgdb_register_callbacks(void)
 		kgdb_arch_init();
 		if (!dbg_is_early)
 			kgdb_arch_late();
-		register_reboot_notifier(&dbg_reboot_notifier);
 		atomic_notifier_chain_register(&panic_notifier_list,
 					       &kgdb_panic_event_nb);
 #ifdef CONFIG_MAGIC_SYSRQ
@@ -838,7 +812,6 @@ static void kgdb_unregister_callbacks(void)
 	 */
 	if (kgdb_io_module_registered) {
 		kgdb_io_module_registered = 0;
-		unregister_reboot_notifier(&dbg_reboot_notifier);
 		atomic_notifier_chain_unregister(&panic_notifier_list,
 					       &kgdb_panic_event_nb);
 		kgdb_arch_exit();

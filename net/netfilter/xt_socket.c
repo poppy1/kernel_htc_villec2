@@ -22,7 +22,7 @@
 #include <net/netfilter/nf_tproxy_core.h>
 #include <net/netfilter/ipv4/nf_defrag_ipv4.h>
 
-#if IS_ENABLED(CONFIG_IP6_NF_IPTABLES)
+#if defined(CONFIG_IP6_NF_IPTABLES) || defined(CONFIG_IP6_NF_IPTABLES_MODULE)
 #define XT_SOCKET_HAVE_IPV6 1
 #include <linux/netfilter_ipv6/ip6_tables.h>
 #include <net/netfilter/ipv6/nf_defrag_ipv6.h>
@@ -30,7 +30,7 @@
 
 #include <linux/netfilter/xt_socket.h>
 
-#if IS_ENABLED(CONFIG_NF_CONNTRACK)
+#if defined(CONFIG_NF_CONNTRACK) || defined(CONFIG_NF_CONNTRACK_MODULE)
 #define XT_SOCKET_HAVE_CONNTRACK 1
 #include <net/netfilter/nf_conntrack.h>
 #endif
@@ -91,6 +91,8 @@ extract_icmp4_fields(const struct sk_buff *skb,
 	if (ports == NULL)
 		return 1;
 
+	/* the inside IP packet is the one quoted from our side, thus
+	 * its saddr is the local address */
 	*protocol = inside_iph->protocol;
 	*laddr = inside_iph->saddr;
 	*lport = ports[0];
@@ -135,6 +137,8 @@ xt_socket_get4_sk(const struct sk_buff *skb, struct xt_action_param *par)
 	}
 
 #ifdef XT_SOCKET_HAVE_CONNTRACK
+	/* Do the lookup with the original socket address in case this is a
+	 * reply packet of an established SNAT-ted connection. */
 
 	ct = nf_ct_get(skb, &ctinfo);
 	if (ct && !nf_ct_is_untracked(ct) &&
@@ -174,10 +178,12 @@ socket_match(const struct sk_buff *skb, struct xt_action_param *par,
 		bool wildcard;
 		bool transparent = true;
 
-		
+		/* Ignore sockets listening on INADDR_ANY */
 		wildcard = (sk->sk_state != TCP_TIME_WAIT &&
 			    inet_sk(sk)->inet_rcv_saddr == 0);
 
+		/* Ignore non-transparent sockets,
+		   if XT_SOCKET_TRANSPARENT is used */
 		if (info && info->flags & XT_SOCKET_TRANSPARENT)
 			transparent = ((sk->sk_state != TCP_TIME_WAIT &&
 					inet_sk(sk)->transparent) ||
@@ -220,7 +226,6 @@ extract_icmp6_fields(const struct sk_buff *skb,
 	struct icmp6hdr *icmph, _icmph;
 	__be16 *ports, _ports[2];
 	u8 inside_nexthdr;
-	__be16 inside_fragoff;
 	int inside_hdrlen;
 
 	icmph = skb_header_pointer(skb, outside_hdrlen,
@@ -236,10 +241,9 @@ extract_icmp6_fields(const struct sk_buff *skb,
 		return 1;
 	inside_nexthdr = inside_iph->nexthdr;
 
-	inside_hdrlen = ipv6_skip_exthdr(skb, outside_hdrlen + sizeof(_icmph) + sizeof(_inside_iph),
-					 &inside_nexthdr, &inside_fragoff);
+	inside_hdrlen = ipv6_skip_exthdr(skb, outside_hdrlen + sizeof(_icmph) + sizeof(_inside_iph), &inside_nexthdr);
 	if (inside_hdrlen < 0)
-		return 1; 
+		return 1; /* hjm: Packet has no/incomplete transport layer headers. */
 
 	if (inside_nexthdr != IPPROTO_TCP &&
 	    inside_nexthdr != IPPROTO_UDP)
@@ -250,6 +254,8 @@ extract_icmp6_fields(const struct sk_buff *skb,
 	if (ports == NULL)
 		return 1;
 
+	/* the inside IP packet is the one quoted from our side, thus
+	 * its saddr is the local address */
 	*protocol = inside_nexthdr;
 	*laddr = &inside_iph->saddr;
 	*lport = ports[0];
@@ -317,10 +323,12 @@ socket_mt6_v1(const struct sk_buff *skb, struct xt_action_param *par)
 		bool wildcard;
 		bool transparent = true;
 
-		
+		/* Ignore sockets listening on INADDR_ANY */
 		wildcard = (sk->sk_state != TCP_TIME_WAIT &&
 			    ipv6_addr_any(&inet6_sk(sk)->rcv_saddr));
 
+		/* Ignore non-transparent sockets,
+		   if XT_SOCKET_TRANSPARENT is used */
 		if (info && info->flags & XT_SOCKET_TRANSPARENT)
 			transparent = ((sk->sk_state != TCP_TIME_WAIT &&
 					inet_sk(sk)->transparent) ||

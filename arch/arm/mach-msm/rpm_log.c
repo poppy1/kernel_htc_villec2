@@ -28,15 +28,19 @@
 
 #include "rpm_log.h"
 
+/* registers in MSM_RPM_LOG_PAGE_INDICES */
 enum {
 	MSM_RPM_LOG_TAIL,
 	MSM_RPM_LOG_HEAD
 };
 
+/* used to 4 byte align message lengths */
 #define PADDED_LENGTH(x) (0xFFFFFFFC & ((x) + 3))
 
+/* calculates the character string length of a message of byte length x */
 #define PRINTED_LENGTH(x) ((x) * 6 + 3)
 
+/* number of ms to wait between checking for new messages in the RPM log */
 #define RECHECK_TIME (50)
 
 struct msm_rpm_log_buffer {
@@ -48,6 +52,9 @@ struct msm_rpm_log_buffer {
 	struct msm_rpm_log_platform_data *pdata;
 };
 
+/******************************************************************************
+ * Internal functions
+ *****************************************************************************/
 
 static inline u32
 msm_rpm_log_read(const struct msm_rpm_log_platform_data *pdata, u32 page,
@@ -57,6 +64,32 @@ msm_rpm_log_read(const struct msm_rpm_log_platform_data *pdata, u32 page,
 				+ reg * 4);
 }
 
+/*
+ * msm_rpm_log_copy() - Copies messages from a volatile circular buffer in
+ *			the RPM's shared memory into a private local buffer
+ * msg_buffer:		pointer to local buffer (string)
+ * buf_len:		length of local buffer in bytes
+ * read_start_idx:	index into shared memory buffer
+ *
+ * Return value:	number of bytes written to the local buffer
+ *
+ * Copies messages stored in a circular buffer in the RPM Message Memory into
+ * a specified local buffer.  The RPM processor is unaware of these reading
+ * efforts, so care is taken to make sure that messages are valid both before
+ * and after reading.  The RPM processor utilizes a ULog driver to write the
+ * log.  The RPM processor maintains tail and head indices.  These correspond
+ * to the next byte to write into, and the first valid byte, respectively.
+ * Both indices increase monotonically (except for rollover).
+ *
+ * Messages take the form of [(u32)length] [(char)data0,1,...] in which the
+ * length specifies the number of payload bytes.  Messages must be 4 byte
+ * aligned, so padding is added at the end of a message as needed.
+ *
+ * Print format:
+ * - 0xXX, 0xXX, 0xXX
+ * - 0xXX
+ * etc...
+ */
 static u32 msm_rpm_log_copy(const struct msm_rpm_log_platform_data *pdata,
 			    char *msg_buffer, u32 buf_len, u32 *read_idx)
 {
@@ -72,15 +105,21 @@ static u32 msm_rpm_log_copy(const struct msm_rpm_log_platform_data *pdata,
 	head_idx = msm_rpm_log_read(pdata, MSM_RPM_LOG_PAGE_INDICES,
 				    MSM_RPM_LOG_HEAD);
 
-	
+	/* loop while the remote buffer has valid messages left to read */
 	while (tail_idx - head_idx > 0 && tail_idx - *read_idx > 0) {
 		head_idx = msm_rpm_log_read(pdata, MSM_RPM_LOG_PAGE_INDICES,
 					    MSM_RPM_LOG_HEAD);
-		
+		/* check if the message to be read is valid */
 		if (tail_idx - *read_idx > tail_idx - head_idx) {
 			*read_idx = head_idx;
 			continue;
 		}
+		/*
+		 * Ensure that the reported buffer size is within limits of
+		 * known maximum size and that all indices are 4 byte aligned.
+		 * These conditions are required to interact with a ULog buffer
+		 * properly.
+		 */
 		if (tail_idx - head_idx > pdata->log_len ||
 		    !IS_ALIGNED((tail_idx | head_idx | *read_idx), 4))
 			break;
@@ -88,20 +127,20 @@ static u32 msm_rpm_log_copy(const struct msm_rpm_log_platform_data *pdata,
 		msg_len = msm_rpm_log_read(pdata, MSM_RPM_LOG_PAGE_BUFFER,
 					(*read_idx >> 2) & pdata->log_len_mask);
 
-		
+		/* handle messages that claim to be longer than the log */
 		if (PADDED_LENGTH(msg_len) > tail_idx - *read_idx - 4)
 			msg_len = tail_idx - *read_idx - 4;
 
-		
+		/* check that the local buffer has enough space for this msg */
 		if (pos + PRINTED_LENGTH(msg_len) > buf_len)
 			break;
 
 		pos_start = pos;
 		pos += scnprintf(msg_buffer + pos, buf_len - pos, "- ");
 
-		
+		/* copy message payload to local buffer */
 		for (i = 0; i < msg_len; i++) {
-			
+			/* read from shared memory 4 bytes at a time */
 			if (IS_ALIGNED(i, 4))
 				*((u32 *)temp) = msm_rpm_log_read(pdata,
 						MSM_RPM_LOG_PAGE_BUFFER,
@@ -117,7 +156,7 @@ static u32 msm_rpm_log_copy(const struct msm_rpm_log_platform_data *pdata,
 		head_idx = msm_rpm_log_read(pdata, MSM_RPM_LOG_PAGE_INDICES,
 					    MSM_RPM_LOG_HEAD);
 
-		
+		/* roll back if message that was read is not still valid */
 		if (tail_idx - *read_idx > tail_idx - head_idx)
 			pos = pos_start;
 
@@ -128,6 +167,17 @@ static u32 msm_rpm_log_copy(const struct msm_rpm_log_platform_data *pdata,
 }
 
 
+/*
+ * msm_rpm_log_file_read() - Reads in log buffer messages then outputs them to a
+ *			     user buffer
+ *
+ * Return value:
+ *	0:	 success
+ *	-ENOMEM: no memory available
+ *	-EINVAL: user buffer null or requested bytes 0
+ *	-EFAULT: user buffer not writeable
+ *	-EAGAIN: no bytes available at the moment
+ */
 static ssize_t msm_rpm_log_file_read(struct file *file, char __user *bufu,
 				     size_t count, loff_t *ppos)
 {
@@ -148,7 +198,7 @@ static ssize_t msm_rpm_log_file_read(struct file *file, char __user *bufu,
 	if (!access_ok(VERIFY_WRITE, bufu, count))
 		return -EFAULT;
 
-	
+	/* check for more messages if local buffer empty */
 	if (buf->pos == buf->len) {
 		buf->pos = 0;
 		buf->len = msm_rpm_log_copy(pdata, buf->data, buf->max_len,
@@ -158,7 +208,7 @@ static ssize_t msm_rpm_log_file_read(struct file *file, char __user *bufu,
 	if ((file->f_flags & O_NONBLOCK) && buf->len == 0)
 		return -EAGAIN;
 
-	
+	/* loop until new messages arrive */
 	while (buf->len == 0) {
 		cond_resched();
 		if (msleep_interruptible(RECHECK_TIME))
@@ -176,6 +226,17 @@ static ssize_t msm_rpm_log_file_read(struct file *file, char __user *bufu,
 }
 
 
+/*
+ * msm_rpm_log_file_open() - Allows a new reader to open the RPM log virtual
+ *                           file
+ *
+ * One local buffer is kmalloc'ed for each reader, so no resource sharing has
+ * to take place (besides the read only access to the RPM log buffer).
+ *
+ * Return value:
+ *	0:	 success
+ *	-ENOMEM: no memory available
+ */
 static int msm_rpm_log_file_open(struct inode *inode, struct file *file)
 {
 	struct msm_rpm_log_buffer *buf;

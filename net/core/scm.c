@@ -28,6 +28,7 @@
 #include <linux/nsproxy.h>
 #include <linux/slab.h>
 
+#include <asm/system.h>
 #include <asm/uaccess.h>
 
 #include <net/protocol.h>
@@ -37,6 +38,10 @@
 #include <net/scm.h>
 
 
+/*
+ *	Only allow a user to send credentials, that they could set with
+ *	setu(g)id.
+ */
 
 static __inline__ int scm_check_creds(struct ucred *creds)
 {
@@ -81,6 +86,9 @@ static int scm_fp_copy(struct cmsghdr *cmsg, struct scm_fp_list **fplp)
 	if (fpl->count + num > fpl->max)
 		return -EINVAL;
 
+	/*
+	 *	Verify the descriptors and increment the usage count.
+	 */
 
 	for (i=0; i< num; i++)
 	{
@@ -134,7 +142,14 @@ int __scm_send(struct socket *sock, struct msghdr *msg, struct scm_cookie *p)
 	{
 		err = -EINVAL;
 
-		
+		/* Verify that cmsg_len is at least sizeof(struct cmsghdr) */
+		/* The first check was omitted in <= 2.2.5. The reasoning was
+		   that parser checks cmsg_len in any case, so that
+		   additional check would be work duplication.
+		   But if cmsg_level is not SOL_SOCKET, we do not check
+		   for too short ancillary data object at all! Oops.
+		   OK, let's add it...
+		 */
 		if (!CMSG_OK(msg, cmsg))
 			goto error;
 
@@ -158,7 +173,7 @@ int __scm_send(struct socket *sock, struct msghdr *msg, struct scm_cookie *p)
 			if (err)
 				goto error;
 
-			if (!p->pid || pid_vnr(p->pid) != p->creds.pid) {
+			if (pid_vnr(p->pid) != p->creds.pid) {
 				struct pid *pid;
 				err = -ESRCH;
 				pid = find_get_pid(p->creds.pid);
@@ -168,9 +183,8 @@ int __scm_send(struct socket *sock, struct msghdr *msg, struct scm_cookie *p)
 				p->pid = pid;
 			}
 
-			if (!p->cred ||
-			    (p->cred->euid != p->creds.uid) ||
-			    (p->cred->egid != p->creds.gid)) {
+			if ((p->cred->euid != p->creds.uid) ||
+				(p->cred->egid != p->creds.gid)) {
 				struct cred *cred;
 				err = -ENOMEM;
 				cred = prepare_creds();
@@ -179,8 +193,7 @@ int __scm_send(struct socket *sock, struct msghdr *msg, struct scm_cookie *p)
 
 				cred->uid = cred->euid = p->creds.uid;
 				cred->gid = cred->egid = p->creds.gid;
-				if (p->cred)
-					put_cred(p->cred);
+				put_cred(p->cred);
 				p->cred = cred;
 			}
 			break;
@@ -215,7 +228,7 @@ int put_cmsg(struct msghdr * msg, int level, int type, int len, void *data)
 
 	if (cm==NULL || msg->msg_controllen < sizeof(*cm)) {
 		msg->msg_flags |= MSG_CTRUNC;
-		return 0; 
+		return 0; /* XXX: return error? check spec. */
 	}
 	if (msg->msg_controllen < cmlen) {
 		msg->msg_flags |= MSG_CTRUNC;
@@ -281,7 +294,7 @@ void scm_detach_fds(struct msghdr *msg, struct scm_cookie *scm)
 			put_unused_fd(new_fd);
 			break;
 		}
-		
+		/* Bump the usage count and install the file. */
 		get_file(fp[i]);
 		fd_install(new_fd, fp[i]);
 	}
@@ -303,6 +316,10 @@ void scm_detach_fds(struct msghdr *msg, struct scm_cookie *scm)
 	if (i < fdnum || (fdnum && fdmax <= 0))
 		msg->msg_flags |= MSG_CTRUNC;
 
+	/*
+	 * All of the files that fit in the message have had their
+	 * usage counts incremented, so we just free the list.
+	 */
 	__scm_destroy(scm);
 }
 EXPORT_SYMBOL(scm_detach_fds);

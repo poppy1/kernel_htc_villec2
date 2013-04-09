@@ -18,6 +18,7 @@
 
 #include <linux/kmemcheck.h>
 #include <linux/list.h>
+#include <linux/module.h>
 #include <linux/timer.h>
 #include <linux/types.h>
 #include <linux/workqueue.h>
@@ -27,13 +28,17 @@
 #include <net/tcp_states.h>
 #include <net/timewait_sock.h>
 
-#include <linux/atomic.h>
+#include <asm/atomic.h>
 
 struct inet_hashinfo;
 
 #define INET_TWDR_RECYCLE_SLOTS_LOG	5
 #define INET_TWDR_RECYCLE_SLOTS		(1 << INET_TWDR_RECYCLE_SLOTS_LOG)
 
+/*
+ * If time > 4sec, it is "slow" path, no recycling is required,
+ * so that we select tick to get range about 4 seconds.
+ */
 #if HZ <= 16 || HZ > 4096
 # error Unsupported: HZ <= 16 or HZ > 4096
 #elif HZ <= 32
@@ -54,12 +59,13 @@ struct inet_hashinfo;
 # define INET_TWDR_RECYCLE_TICK (12 + 2 - INET_TWDR_RECYCLE_SLOTS_LOG)
 #endif
 
-#define INET_TWDR_TWKILL_SLOTS	8 
+/* TIME_WAIT reaping mechanism. */
+#define INET_TWDR_TWKILL_SLOTS	8 /* Please keep this a power of 2. */
 
 #define INET_TWDR_TWKILL_QUOTA 100
 
 struct inet_timewait_death_row {
-	
+	/* Short-time timewait calendar */
 	int			twcal_hand;
 	unsigned long		twcal_jiffie;
 	struct timer_list	twcal_timer;
@@ -84,7 +90,16 @@ extern void inet_twdr_twcal_tick(unsigned long data);
 
 struct inet_bind_bucket;
 
+/*
+ * This is a TIME_WAIT sock. It works around the memory consumption
+ * problems of sockets in such a state on heavily loaded servers, but
+ * without violating the protocol specification.
+ */
 struct inet_timewait_sock {
+	/*
+	 * Now struct sock also uses sock_common, so please just
+	 * don't add nothing before this first member (__tw_common) --acme
+	 */
 	struct sock_common	__tw_common;
 #define tw_family		__tw_common.skc_family
 #define tw_state		__tw_common.skc_state
@@ -102,24 +117,22 @@ struct inet_timewait_sock {
 	volatile unsigned char	tw_substate;
 	unsigned char		tw_rcv_wscale;
 
-	
-	
+	/* Socket demultiplex comparisons on incoming packets. */
+	/* these three are in inet_sock */
 	__be16			tw_sport;
 	__be16			tw_dport;
 	__u16			tw_num;
 	kmemcheck_bitfield_begin(flags);
-	
+	/* And these are ours. */
 	unsigned int		tw_ipv6only     : 1,
 				tw_transparent  : 1,
-				tw_pad		: 6,	
-				tw_tos		: 8,
+				tw_pad		: 14,	/* 14 bits hole */
 				tw_ipv6_offset  : 16;
 	kmemcheck_bitfield_end(flags);
 	unsigned long		tw_ttd;
 	struct inet_bind_bucket	*tw_tb;
 	struct hlist_node	tw_death_node;
 };
-#define tw_tclass tw_tos
 
 static inline void inet_twsk_add_node_rcu(struct inet_timewait_sock *tw,
 				      struct hlist_nulls_head *list)
@@ -174,6 +187,7 @@ static inline struct inet_timewait_sock *inet_twsk(const struct sock *sk)
 
 static inline __be32 sk_rcv_saddr(const struct sock *sk)
 {
+/* both inet_sk() and inet_twsk() store rcv_saddr in skc_rcv_saddr */
 	return sk->__sk_common.skc_rcv_saddr;
 }
 
@@ -203,12 +217,20 @@ extern void inet_twsk_purge(struct inet_hashinfo *hashinfo,
 static inline
 struct net *twsk_net(const struct inet_timewait_sock *twsk)
 {
-	return read_pnet(&twsk->tw_net);
+#ifdef CONFIG_NET_NS
+	return rcu_dereference_raw(twsk->tw_net); /* protected by locking, */
+						  /* reference counting, */
+						  /* initialization, or RCU. */
+#else
+	return &init_net;
+#endif
 }
 
 static inline
 void twsk_net_set(struct inet_timewait_sock *twsk, struct net *net)
 {
-	write_pnet(&twsk->tw_net, net);
+#ifdef CONFIG_NET_NS
+	rcu_assign_pointer(twsk->tw_net, net);
+#endif
 }
-#endif	
+#endif	/* _INET_TIMEWAIT_SOCK_ */

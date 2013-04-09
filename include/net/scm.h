@@ -7,6 +7,9 @@
 #include <linux/pid.h>
 #include <linux/nsproxy.h>
 
+/* Well, we should have at least one descriptor open
+ * to accept passed FDs 8)
+ */
 #define SCM_MAX_FD	253
 
 struct scm_fp_list {
@@ -17,12 +20,12 @@ struct scm_fp_list {
 };
 
 struct scm_cookie {
-	struct pid		*pid;		
+	struct pid		*pid;		/* Skb credentials */
 	const struct cred	*cred;
-	struct scm_fp_list	*fp;		
-	struct ucred		creds;		
+	struct scm_fp_list	*fp;		/* Passed files		*/
+	struct ucred		creds;		/* Skb credentials	*/
 #ifdef CONFIG_SECURITY_NETWORK
-	u32			secid;		
+	u32			secid;		/* Passed security ID 	*/
 #endif
 };
 
@@ -40,13 +43,13 @@ static __inline__ void unix_get_peersec_dgram(struct socket *sock, struct scm_co
 #else
 static __inline__ void unix_get_peersec_dgram(struct socket *sock, struct scm_cookie *scm)
 { }
-#endif 
+#endif /* CONFIG_SECURITY_NETWORK */
 
 static __inline__ void scm_set_cred(struct scm_cookie *scm,
 				    struct pid *pid, const struct cred *cred)
 {
 	scm->pid  = get_pid(pid);
-	scm->cred = cred ? get_cred(cred) : NULL;
+	scm->cred = get_cred(cred);
 	cred_to_ucred(pid, cred, &scm->creds);
 }
 
@@ -68,11 +71,10 @@ static __inline__ void scm_destroy(struct scm_cookie *scm)
 }
 
 static __inline__ int scm_send(struct socket *sock, struct msghdr *msg,
-			       struct scm_cookie *scm, bool forcecreds)
+			       struct scm_cookie *scm)
 {
-	memset(scm, 0, sizeof(*scm));
-	if (forcecreds)
-		scm_set_cred(scm, task_tgid(current), current_cred());
+	scm_set_cred(scm, task_tgid(current), current_cred());
+	scm->fp = NULL;
 	unix_get_peersec_dgram(sock, scm);
 	if (msg->msg_controllen <= 0)
 		return 0;
@@ -98,7 +100,7 @@ static inline void scm_passec(struct socket *sock, struct msghdr *msg, struct sc
 #else
 static inline void scm_passec(struct socket *sock, struct msghdr *msg, struct scm_cookie *scm)
 { }
-#endif 
+#endif /* CONFIG_SECURITY_NETWORK */
 
 static __inline__ void scm_recv(struct socket *sock, struct msghdr *msg,
 				struct scm_cookie *scm, int flags)
@@ -124,5 +126,5 @@ static __inline__ void scm_recv(struct socket *sock, struct msghdr *msg,
 }
 
 
-#endif 
+#endif /* __LINUX_NET_SCM_H */
 

@@ -28,6 +28,7 @@
 
 #include <asm/asm-offsets.h>
 #include <asm/uaccess.h>
+#include <asm/system.h>
 #include <asm/setup.h>
 #include <asm/pgtable.h>
 #include <asm/tlb.h>
@@ -91,7 +92,9 @@ void cpu_idle(void)
 				idle();
 		}
 
-		schedule_preempt_disabled();
+		preempt_enable_no_resched();
+		schedule();
+		preempt_disable();
 	}
 }
 
@@ -140,7 +143,10 @@ void machine_power_off(void)
 
 void flush_thread(void)
 {
-	/* nothing */
+#if 0 //ndef NO_FPU
+	unsigned long zero = 0;
+#endif
+	set_fs(USER_DS);
 }
 
 inline unsigned long user_stack(const struct pt_regs *regs)

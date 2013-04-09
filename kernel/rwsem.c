@@ -1,12 +1,21 @@
+/* kernel/rwsem.c: R/W semaphores, public implementation
+ *
+ * Written by David Howells (dhowells@redhat.com).
+ * Derived from asm-i386/semaphore.h
+ */
 
 #include <linux/types.h>
 #include <linux/kernel.h>
 #include <linux/sched.h>
-#include <linux/export.h>
+#include <linux/module.h>
 #include <linux/rwsem.h>
 
-#include <linux/atomic.h>
+#include <asm/system.h>
+#include <asm/atomic.h>
 
+/*
+ * lock for reading
+ */
 void __sched down_read(struct rw_semaphore *sem)
 {
 	might_sleep();
@@ -17,6 +26,9 @@ void __sched down_read(struct rw_semaphore *sem)
 
 EXPORT_SYMBOL(down_read);
 
+/*
+ * trylock for reading -- returns 1 if successful, 0 if contention
+ */
 int down_read_trylock(struct rw_semaphore *sem)
 {
 	int ret = __down_read_trylock(sem);
@@ -28,6 +40,9 @@ int down_read_trylock(struct rw_semaphore *sem)
 
 EXPORT_SYMBOL(down_read_trylock);
 
+/*
+ * lock for writing
+ */
 void __sched down_write(struct rw_semaphore *sem)
 {
 	might_sleep();
@@ -38,6 +53,9 @@ void __sched down_write(struct rw_semaphore *sem)
 
 EXPORT_SYMBOL(down_write);
 
+/*
+ * trylock for writing -- returns 1 if successful, 0 if contention
+ */
 int down_write_trylock(struct rw_semaphore *sem)
 {
 	int ret = __down_write_trylock(sem);
@@ -49,6 +67,9 @@ int down_write_trylock(struct rw_semaphore *sem)
 
 EXPORT_SYMBOL(down_write_trylock);
 
+/*
+ * release a read lock
+ */
 void up_read(struct rw_semaphore *sem)
 {
 	rwsem_release(&sem->dep_map, 1, _RET_IP_);
@@ -58,6 +79,9 @@ void up_read(struct rw_semaphore *sem)
 
 EXPORT_SYMBOL(up_read);
 
+/*
+ * release a write lock
+ */
 void up_write(struct rw_semaphore *sem)
 {
 	rwsem_release(&sem->dep_map, 1, _RET_IP_);
@@ -67,8 +91,15 @@ void up_write(struct rw_semaphore *sem)
 
 EXPORT_SYMBOL(up_write);
 
+/*
+ * downgrade write lock to read lock
+ */
 void downgrade_write(struct rw_semaphore *sem)
 {
+	/*
+	 * lockdep: a downgraded write will live on as a write
+	 * dependency.
+	 */
 	__downgrade_write(sem);
 }
 
@@ -86,6 +117,15 @@ void down_read_nested(struct rw_semaphore *sem, int subclass)
 
 EXPORT_SYMBOL(down_read_nested);
 
+void down_read_non_owner(struct rw_semaphore *sem)
+{
+	might_sleep();
+
+	__down_read(sem);
+}
+
+EXPORT_SYMBOL(down_read_non_owner);
+
 void down_write_nested(struct rw_semaphore *sem, int subclass)
 {
 	might_sleep();
@@ -95,6 +135,13 @@ void down_write_nested(struct rw_semaphore *sem, int subclass)
 }
 
 EXPORT_SYMBOL(down_write_nested);
+
+void up_read_non_owner(struct rw_semaphore *sem)
+{
+	__up_read(sem);
+}
+
+EXPORT_SYMBOL(up_read_non_owner);
 
 #endif
 

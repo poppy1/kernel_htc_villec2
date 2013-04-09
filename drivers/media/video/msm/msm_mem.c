@@ -11,7 +11,6 @@
  *
  */
 
-#include <linux/module.h>
 #include <linux/workqueue.h>
 #include <linux/delay.h>
 #include <linux/types.h>
@@ -35,6 +34,13 @@
 #else
 #define D(fmt, args...) do {} while (0)
 #endif
+
+
+#define ERR_USER_COPY(to) pr_err("%s(%d): copy %s user\n", \
+				__func__, __LINE__, ((to) ? "to" : "from"))
+#define ERR_COPY_FROM_USER() ERR_USER_COPY(0)
+#define ERR_COPY_TO_USER() ERR_USER_COPY(1)
+
 
 #define PAD_TO_WORD(a)	  (((a) + 3) & ~3)
 
@@ -77,16 +83,16 @@ static int check_pmem_info(struct msm_pmem_info *info, int len)
 {
 	if (info->offset < len &&
 		info->offset + info->len <= len &&
-		info->planar0_off < len &&
-		info->planar1_off < len)
+		info->y_off < len &&
+		info->cbcr_off < len)
 		return 0;
 
 	pr_err("%s: check failed: off %d len %d y %d cbcr %d (total len %d)\n",
 						__func__,
 						info->offset,
 						info->len,
-						info->planar0_off,
-						info->planar1_off,
+						info->y_off,
+						info->cbcr_off,
 						len);
 	return -EINVAL;
 }
@@ -133,7 +139,7 @@ static int msm_pmem_table_add(struct hlist_head *ptype,
 	if (!region)
 		goto out;
 #ifdef CONFIG_MSM_MULTIMEDIA_USE_ION
-	region->handle = ion_import_dma_buf(client, info->fd);
+	region->handle = ion_import_fd(client, info->fd);
 	if (IS_ERR_OR_NULL(region->handle))
 		goto out1;
 	if (ion_map_iommu(client, region->handle, CAMERA_DOMAIN, GEN_POOL,
@@ -183,8 +189,8 @@ out3:
 #ifdef CONFIG_MSM_MULTIMEDIA_USE_ION
 	ion_unmap_iommu(client, region->handle, CAMERA_DOMAIN, GEN_POOL);
 #endif
-#ifdef CONFIG_MSM_MULTIMEDIA_USE_ION
 out2:
+#ifdef CONFIG_MSM_MULTIMEDIA_USE_ION
 	ion_free(client, region->handle);
 #elif CONFIG_ANDROID_PMEM
 	put_pmem_file(region->file);
@@ -208,10 +214,6 @@ static int __msm_register_pmem(struct hlist_head *ptype,
 	case MSM_PMEM_CS:
 	case MSM_PMEM_IHIST:
 	case MSM_PMEM_SKIN:
-	case MSM_PMEM_AEC_AWB:
-	case MSM_PMEM_BAYER_GRID:
-	case MSM_PMEM_BAYER_FOCUS:
-	case MSM_PMEM_BAYER_HIST:
 		rc = msm_pmem_table_add(ptype, pinfo, client);
 		break;
 
@@ -238,10 +240,6 @@ static int __msm_pmem_table_del(struct hlist_head *ptype,
 	case MSM_PMEM_CS:
 	case MSM_PMEM_IHIST:
 	case MSM_PMEM_SKIN:
-	case MSM_PMEM_AEC_AWB:
-	case MSM_PMEM_BAYER_GRID:
-	case MSM_PMEM_BAYER_FOCUS:
-	case MSM_PMEM_BAYER_HIST:
 		hlist_for_each_entry_safe(region, node, n,
 				ptype, list) {
 
@@ -269,6 +267,7 @@ static int __msm_pmem_table_del(struct hlist_head *ptype,
 	return rc;
 }
 
+/* return of 0 means failure */
 uint8_t msm_pmem_region_lookup(struct hlist_head *ptype,
 	int pmem_type, struct msm_pmem_region *reg, uint8_t maxcount)
 {
@@ -352,15 +351,14 @@ uint8_t msm_pmem_region_lookup_2(struct hlist_head *ptype,
 }
 
 unsigned long msm_pmem_stats_vtop_lookup(
-				struct msm_cam_media_controller *mctl,
+				struct msm_sync *sync,
 				unsigned long buffer,
 				int fd)
 {
 	struct msm_pmem_region *region;
 	struct hlist_node *node, *n;
 
-	hlist_for_each_entry_safe(region, node, n,
-	&mctl->stats_info.pmem_stats_list, list) {
+	hlist_for_each_entry_safe(region, node, n, &sync->pmem_stats, list) {
 		if (((unsigned long)(region->info.vaddr) == buffer) &&
 						(region->info.fd == fd) &&
 						region->info.active == 0) {
@@ -372,24 +370,21 @@ unsigned long msm_pmem_stats_vtop_lookup(
 	return 0;
 }
 
-unsigned long msm_pmem_stats_ptov_lookup(
-		struct msm_cam_media_controller *mctl,
-		unsigned long addr, int *fd)
+unsigned long msm_pmem_stats_ptov_lookup(struct msm_sync *sync,
+						unsigned long addr, int *fd)
 {
 	struct msm_pmem_region *region;
 	struct hlist_node *node, *n;
 
-	hlist_for_each_entry_safe(region, node, n,
-	&mctl->stats_info.pmem_stats_list, list) {
+	hlist_for_each_entry_safe(region, node, n, &sync->pmem_stats, list) {
 		if (addr == region->paddr && region->info.active) {
+			/* offset since we could pass vaddr inside a
+			 * registered pmem buffer */
 			*fd = region->info.fd;
 			region->info.active = 0;
 			return (unsigned long)(region->info.vaddr);
 		}
 	}
-
-    if (addr != 0)
-        pr_err("%s: abnormal addr == 0X%x\n", __func__, (uint32_t)addr);
 
 	return 0;
 }

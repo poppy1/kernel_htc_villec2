@@ -30,6 +30,7 @@ static const struct xt_table packet_filter = {
 	.priority	= NF_IP6_PRI_FILTER,
 };
 
+/* The work comes in here from netfilter.c. */
 static unsigned int
 ip6table_filter_hook(unsigned int hook, struct sk_buff *skb,
 		     const struct net_device *in, const struct net_device *out,
@@ -42,7 +43,8 @@ ip6table_filter_hook(unsigned int hook, struct sk_buff *skb,
 
 static struct nf_hook_ops *filter_ops __read_mostly;
 
-static bool forward = true;
+/* Default to forward because I got too much mail already. */
+static int forward = NF_ACCEPT;
 module_param(forward, bool, 0000);
 
 static int __net_init ip6table_filter_net_init(struct net *net)
@@ -52,9 +54,9 @@ static int __net_init ip6table_filter_net_init(struct net *net)
 	repl = ip6t_alloc_initial_table(&packet_filter);
 	if (repl == NULL)
 		return -ENOMEM;
-	
+	/* Entry 1 is the FORWARD hook */
 	((struct ip6t_standard *)repl->entries)[1].target.verdict =
-		forward ? -NF_ACCEPT - 1 : -NF_DROP - 1;
+		-forward - 1;
 
 	net->ipv6.ip6table_filter =
 		ip6t_register_table(net, &packet_filter, repl);
@@ -78,11 +80,16 @@ static int __init ip6table_filter_init(void)
 {
 	int ret;
 
+	if (forward < 0 || forward > NF_MAX_VERDICT) {
+		pr_err("iptables forward must be 0 or 1\n");
+		return -EINVAL;
+	}
+
 	ret = register_pernet_subsys(&ip6table_filter_net_ops);
 	if (ret < 0)
 		return ret;
 
-	
+	/* Register hooks */
 	filter_ops = xt_hook_link(&packet_filter, ip6table_filter_hook);
 	if (IS_ERR(filter_ops)) {
 		ret = PTR_ERR(filter_ops);

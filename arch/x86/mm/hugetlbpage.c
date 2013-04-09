@@ -58,8 +58,7 @@ static int vma_shareable(struct vm_area_struct *vma, unsigned long addr)
 /*
  * search for a shareable pmd page for hugetlb.
  */
-static pte_t *
-huge_pmd_share(struct mm_struct *mm, unsigned long addr, pud_t *pud)
+static void huge_pmd_share(struct mm_struct *mm, unsigned long addr, pud_t *pud)
 {
 	struct vm_area_struct *vma = find_vma(mm, addr);
 	struct address_space *mapping = vma->vm_file->f_mapping;
@@ -69,10 +68,9 @@ huge_pmd_share(struct mm_struct *mm, unsigned long addr, pud_t *pud)
 	struct vm_area_struct *svma;
 	unsigned long saddr;
 	pte_t *spte = NULL;
-	pte_t *pte;
 
 	if (!vma_shareable(vma, addr))
-		return (pte_t *)pmd_alloc(mm, pud, addr);
+		return;
 
 	mutex_lock(&mapping->i_mmap_mutex);
 	vma_prio_tree_foreach(svma, &iter, &mapping->i_mmap, idx, idx) {
@@ -99,9 +97,7 @@ huge_pmd_share(struct mm_struct *mm, unsigned long addr, pud_t *pud)
 		put_page(virt_to_page(spte));
 	spin_unlock(&mm->page_table_lock);
 out:
-	pte = (pte_t *)pmd_alloc(mm, pud, addr);
 	mutex_unlock(&mapping->i_mmap_mutex);
-	return pte;
 }
 
 /*
@@ -146,9 +142,8 @@ pte_t *huge_pte_alloc(struct mm_struct *mm,
 		} else {
 			BUG_ON(sz != PMD_SIZE);
 			if (pud_none(*pud))
-				pte = huge_pmd_share(mm, addr, pud);
-			else
-				pte = (pte_t *)pmd_alloc(mm, pud, addr);
+				huge_pmd_share(mm, addr, pud);
+			pte = (pte_t *) pmd_alloc(mm, pud, addr);
 		}
 	}
 	BUG_ON(pte && !pte_none(*pte) && !pte_huge(*pte));
@@ -313,11 +308,10 @@ static unsigned long hugetlb_get_unmapped_area_topdown(struct file *file,
 {
 	struct hstate *h = hstate_file(file);
 	struct mm_struct *mm = current->mm;
-	struct vm_area_struct *vma;
-	unsigned long base = mm->mmap_base;
-	unsigned long addr = addr0;
+	struct vm_area_struct *vma, *prev_vma;
+	unsigned long base = mm->mmap_base, addr = addr0;
 	unsigned long largest_hole = mm->cached_hole_size;
-	unsigned long start_addr;
+	int first_time = 1;
 
 	/* don't allow allocations above current base */
 	if (mm->free_area_cache > base)
@@ -328,8 +322,6 @@ static unsigned long hugetlb_get_unmapped_area_topdown(struct file *file,
 		mm->free_area_cache  = base;
 	}
 try_again:
-	start_addr = mm->free_area_cache;
-
 	/* make sure it can fit in the remaining address space */
 	if (mm->free_area_cache < len)
 		goto fail;
@@ -341,18 +333,24 @@ try_again:
 		 * Lookup failure means no vma is above this address,
 		 * i.e. return with success:
 		 */
-		vma = find_vma(mm, addr);
-		if (!vma)
+		if (!(vma = find_vma_prev(mm, addr, &prev_vma)))
 			return addr;
 
-		if (addr + len <= vma->vm_start) {
+		/*
+		 * new region fits between prev_vma->vm_end and
+		 * vma->vm_start, use it:
+		 */
+		if (addr + len <= vma->vm_start &&
+		            (!prev_vma || (addr >= prev_vma->vm_end))) {
 			/* remember the address as a hint for next time */
 		        mm->cached_hole_size = largest_hole;
 		        return (mm->free_area_cache = addr);
-		} else if (mm->free_area_cache == vma->vm_end) {
+		} else {
 			/* pull free_area_cache down to the first hole */
-			mm->free_area_cache = vma->vm_start;
-			mm->cached_hole_size = largest_hole;
+		        if (mm->free_area_cache == vma->vm_end) {
+				mm->free_area_cache = vma->vm_start;
+				mm->cached_hole_size = largest_hole;
+			}
 		}
 
 		/* remember the largest hole we saw so far */
@@ -368,9 +366,10 @@ fail:
 	 * if hint left us with no space for the requested
 	 * mapping then try again:
 	 */
-	if (start_addr != base) {
+	if (first_time) {
 		mm->free_area_cache = base;
 		largest_hole = 0;
+		first_time = 0;
 		goto try_again;
 	}
 	/*

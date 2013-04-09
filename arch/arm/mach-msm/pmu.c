@@ -1,4 +1,4 @@
-/* Copyright (c) 2010-2012, Code Aurora Forum. All rights reserved.
+/* Copyright (c) 2010-2011, Code Aurora Forum. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -14,28 +14,24 @@
 #include <asm/pmu.h>
 #include <mach/irqs.h>
 
-static struct resource cpu_pmu_resource[] = {
-	{
-		.start = INT_ARMQC_PERFMON,
-		.end = INT_ARMQC_PERFMON,
-		.flags	= IORESOURCE_IRQ,
-	},
+static struct resource cpu_pmu_resource = {
+	.start = INT_ARMQC_PERFMON,
+	.end = INT_ARMQC_PERFMON,
+	.flags	= IORESOURCE_IRQ,
 };
 
 #ifdef CONFIG_CPU_HAS_L2_PMU
-static struct resource l2_pmu_resource[] = {
-	{
-		.start = SC_SICL2PERFMONIRPTREQ,
-		.end = SC_SICL2PERFMONIRPTREQ,
-		.flags = IORESOURCE_IRQ,
-	},
+static struct resource l2_pmu_resource = {
+	.start = SC_SICL2PERFMONIRPTREQ,
+	.end = SC_SICL2PERFMONIRPTREQ,
+	.flags = IORESOURCE_IRQ,
 };
 
 static struct platform_device l2_pmu_device = {
 	.name		= "l2-arm-pmu",
-	.id		= ARM_PMU_DEVICE_L2CC,
-	.resource	= l2_pmu_resource,
-	.num_resources	= ARRAY_SIZE(l2_pmu_resource),
+	.id		= ARM_PMU_DEVICE_L2,
+	.resource	= &l2_pmu_resource,
+	.num_resources	= 1,
 };
 
 #endif
@@ -43,8 +39,8 @@ static struct platform_device l2_pmu_device = {
 static struct platform_device cpu_pmu_device = {
 	.name		= "cpu-arm-pmu",
 	.id		= ARM_PMU_DEVICE_CPU,
-	.resource	= cpu_pmu_resource,
-	.num_resources	= ARRAY_SIZE(cpu_pmu_resource),
+	.resource	= &cpu_pmu_resource,
+	.num_resources	= 1,
 };
 
 static struct platform_device *pmu_devices[] = {

@@ -3,53 +3,65 @@
 
 #include <linux/radix-tree.h>
 #include <linux/rcupdate.h>
-#include <linux/workqueue.h>
 
-enum {
-	ICQ_IOPRIO_CHANGED	= 1 << 0,
-	ICQ_CGROUP_CHANGED	= 1 << 1,
-	ICQ_EXITED		= 1 << 2,
+struct cfq_queue;
+struct cfq_io_context {
+	void *key;
 
-	ICQ_CHANGED_MASK	= ICQ_IOPRIO_CHANGED | ICQ_CGROUP_CHANGED,
+	struct cfq_queue *cfqq[2];
+
+	struct io_context *ioc;
+
+	unsigned long last_end_request;
+
+	unsigned long ttime_total;
+	unsigned long ttime_samples;
+	unsigned long ttime_mean;
+
+	struct list_head queue_list;
+	struct hlist_node cic_list;
+
+	void (*dtor)(struct io_context *); /* destructor */
+	void (*exit)(struct io_context *); /* called on task exit */
+
+	struct rcu_head rcu_head;
 };
 
-struct io_cq {
-	struct request_queue	*q;
-	struct io_context	*ioc;
-
-	union {
-		struct list_head	q_node;
-		struct kmem_cache	*__rcu_icq_cache;
-	};
-	union {
-		struct hlist_node	ioc_node;
-		struct rcu_head		__rcu_head;
-	};
-
-	unsigned int		flags;
-};
-
+/*
+ * I/O subsystem state of the associated processes.  It is refcounted
+ * and kmalloc'ed. These could be shared between processes.
+ */
 struct io_context {
 	atomic_long_t refcount;
 	atomic_t nr_tasks;
 
-	
+	/* all the fields below are protected by this lock */
 	spinlock_t lock;
 
 	unsigned short ioprio;
+	unsigned short ioprio_changed;
 
-	int nr_batch_requests;     
-	unsigned long last_waited; 
+#if defined(CONFIG_BLK_CGROUP) || defined(CONFIG_BLK_CGROUP_MODULE)
+	unsigned short cgroup_changed;
+#endif
 
-	struct radix_tree_root	icq_tree;
-	struct io_cq __rcu	*icq_hint;
-	struct hlist_head	icq_list;
+	/*
+	 * For request batching
+	 */
+	int nr_batch_requests;     /* Number of requests left in the batch */
+	unsigned long last_waited; /* Time last woken after wait for request */
 
-	struct work_struct release_work;
+	struct radix_tree_root radix_root;
+	struct hlist_head cic_list;
+	void __rcu *ioc_data;
 };
 
 static inline struct io_context *ioc_task_link(struct io_context *ioc)
 {
+	/*
+	 * if ref count is zero, don't allow sharing (ioc is going away, it's
+	 * a race).
+	 */
 	if (ioc && atomic_long_inc_not_zero(&ioc->refcount)) {
 		atomic_inc(&ioc->nr_tasks);
 		return ioc;
@@ -60,17 +72,20 @@ static inline struct io_context *ioc_task_link(struct io_context *ioc)
 
 struct task_struct;
 #ifdef CONFIG_BLOCK
-void put_io_context(struct io_context *ioc);
+int put_io_context(struct io_context *ioc);
 void exit_io_context(struct task_struct *task);
-struct io_context *get_task_io_context(struct task_struct *task,
-				       gfp_t gfp_flags, int node);
-void ioc_ioprio_changed(struct io_context *ioc, int ioprio);
-void ioc_cgroup_changed(struct io_context *ioc);
-unsigned int icq_get_changed(struct io_cq *icq);
+struct io_context *get_io_context(gfp_t gfp_flags, int node);
+struct io_context *alloc_io_context(gfp_t gfp_flags, int node);
 #else
+static inline void exit_io_context(struct task_struct *task)
+{
+}
+
 struct io_context;
-static inline void put_io_context(struct io_context *ioc) { }
-static inline void exit_io_context(struct task_struct *task) { }
+static inline int put_io_context(struct io_context *ioc)
+{
+	return 1;
+}
 #endif
 
 #endif

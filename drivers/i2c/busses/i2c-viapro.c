@@ -91,7 +91,7 @@ static unsigned short SMBHSTCFG = 0xD2;
 
 /* If force is set to anything different from 0, we forcibly enable the
    VT596. DANGEROUS! */
-static bool force;
+static int force;
 module_param(force, bool, 0);
 MODULE_PARM_DESC(force, "Forcibly enable the SMBus. DANGEROUS!");
 
@@ -324,7 +324,7 @@ static int __devinit vt596_probe(struct pci_dev *pdev,
 				 const struct pci_device_id *id)
 {
 	unsigned char temp;
-	int error;
+	int error = -ENODEV;
 
 	/* Determine the address of the SMBus areas */
 	if (force_addr) {
@@ -390,7 +390,6 @@ found:
 			dev_err(&pdev->dev, "SMBUS: Error: Host SMBus "
 				"controller not enabled! - upgrade BIOS or "
 				"use force=1\n");
-			error = -ENODEV;
 			goto release_region;
 		}
 	}
@@ -423,11 +422,9 @@ found:
 		 "SMBus Via Pro adapter at %04x", vt596_smba);
 
 	vt596_pdev = pci_dev_get(pdev);
-	error = i2c_add_adapter(&vt596_adapter);
-	if (error) {
+	if (i2c_add_adapter(&vt596_adapter)) {
 		pci_dev_put(vt596_pdev);
 		vt596_pdev = NULL;
-		goto release_region;
 	}
 
 	/* Always return failure here.  This is to allow other drivers to bind
@@ -441,7 +438,7 @@ release_region:
 	return error;
 }
 
-static DEFINE_PCI_DEVICE_TABLE(vt596_ids) = {
+static const struct pci_device_id vt596_ids[] = {
 	{ PCI_DEVICE(PCI_VENDOR_ID_VIA, PCI_DEVICE_ID_VIA_82C596_3),
 	  .driver_data = SMBBA1 },
 	{ PCI_DEVICE(PCI_VENDOR_ID_VIA, PCI_DEVICE_ID_VIA_82C596B_3),

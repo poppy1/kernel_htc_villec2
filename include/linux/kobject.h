@@ -25,16 +25,28 @@
 #include <linux/kobject_ns.h>
 #include <linux/kernel.h>
 #include <linux/wait.h>
-#include <linux/atomic.h>
+#include <asm/atomic.h>
 
 #define UEVENT_HELPER_PATH_LEN		256
-#define UEVENT_NUM_ENVP			32	
-#define UEVENT_BUFFER_SIZE		2048	
+#define UEVENT_NUM_ENVP			32	/* number of env pointers */
+#define UEVENT_BUFFER_SIZE		2048	/* buffer for the variables */
 
+/* path to the userspace helper executed on an event */
 extern char uevent_helper[];
 
+/* counter to tag the uevent, read only except for the kobject core */
 extern u64 uevent_seqnum;
 
+/*
+ * The actions here must match the index to the string array
+ * in lib/kobject_uevent.c
+ *
+ * Do not add new actions here without checking with the driver-core
+ * maintainers. Action strings are not meant to express subsystem
+ * or device specific properties. In most cases you want to send a
+ * kobject_uevent_env(kobj, KOBJ_CHANGE, env) with additional event
+ * specific variables added to the event environment.
+ */
 enum kobject_action {
 	KOBJ_ADD,
 	KOBJ_REMOVE,
@@ -60,8 +72,8 @@ struct kobject {
 	unsigned int uevent_suppress:1;
 };
 
-extern __printf(2, 3)
-int kobject_set_name(struct kobject *kobj, const char *name, ...);
+extern int kobject_set_name(struct kobject *kobj, const char *name, ...)
+			    __attribute__((format(printf, 2, 3)));
 extern int kobject_set_name_vargs(struct kobject *kobj, const char *fmt,
 				  va_list vargs);
 
@@ -71,13 +83,15 @@ static inline const char *kobject_name(const struct kobject *kobj)
 }
 
 extern void kobject_init(struct kobject *kobj, struct kobj_type *ktype);
-extern __printf(3, 4) __must_check
-int kobject_add(struct kobject *kobj, struct kobject *parent,
-		const char *fmt, ...);
-extern __printf(4, 5) __must_check
-int kobject_init_and_add(struct kobject *kobj,
-			 struct kobj_type *ktype, struct kobject *parent,
-			 const char *fmt, ...);
+extern int __must_check kobject_add(struct kobject *kobj,
+				    struct kobject *parent,
+				    const char *fmt, ...)
+	__attribute__((format(printf, 3, 4)));
+extern int __must_check kobject_init_and_add(struct kobject *kobj,
+					     struct kobj_type *ktype,
+					     struct kobject *parent,
+					     const char *fmt, ...)
+	__attribute__((format(printf, 4, 5)));
 
 extern void kobject_del(struct kobject *kobj);
 
@@ -127,6 +141,23 @@ extern const struct sysfs_ops kobj_sysfs_ops;
 
 struct sock;
 
+/**
+ * struct kset - a set of kobjects of a specific type, belonging to a specific subsystem.
+ *
+ * A kset defines a group of kobjects.  They can be individually
+ * different "types" but overall these kobjects all want to be grouped
+ * together and operated on in the same manner.  ksets are used to
+ * define the attribute callbacks and other common events that happen to
+ * a kobject.
+ *
+ * @list: the list of all kobjects for this kset
+ * @list_lock: a lock for iterating over the kobjects
+ * @kobj: the embedded kobject for this kset (recursion, isn't it fun...)
+ * @uevent_ops: the set of uevent operations for this kset.  These are
+ * called whenever a kobject has something happen to it so that the kset
+ * can add new environment variables, or filter out the uevents if so
+ * desired.
+ */
 struct kset {
 	struct list_head list;
 	spinlock_t list_lock;
@@ -162,11 +193,18 @@ static inline struct kobj_type *get_ktype(struct kobject *kobj)
 }
 
 extern struct kobject *kset_find_obj(struct kset *, const char *);
+extern struct kobject *kset_find_obj_hinted(struct kset *, const char *,
+						struct kobject *);
 
+/* The global /sys/kernel/ kobject for people to chain off of */
 extern struct kobject *kernel_kobj;
+/* The global /sys/kernel/mm/ kobject for people to chain off of */
 extern struct kobject *mm_kobj;
+/* The global /sys/hypervisor/ kobject for people to chain off of */
 extern struct kobject *hypervisor_kobj;
+/* The global /sys/power/ kobject for people to chain off of */
 extern struct kobject *power_kobj;
+/* The global /sys/firmware/ kobject for people to chain off of */
 extern struct kobject *firmware_kobj;
 
 #if defined(CONFIG_HOTPLUG)
@@ -174,8 +212,8 @@ int kobject_uevent(struct kobject *kobj, enum kobject_action action);
 int kobject_uevent_env(struct kobject *kobj, enum kobject_action action,
 			char *envp[]);
 
-__printf(2, 3)
-int add_uevent_var(struct kobj_uevent_env *env, const char *format, ...);
+int add_uevent_var(struct kobj_uevent_env *env, const char *format, ...)
+	__attribute__((format (printf, 2, 3)));
 
 int kobject_action_type(const char *buf, size_t count,
 			enum kobject_action *type);
@@ -188,7 +226,7 @@ static inline int kobject_uevent_env(struct kobject *kobj,
 				      char *envp[])
 { return 0; }
 
-static inline __printf(2, 3)
+static inline __attribute__((format(printf, 2, 3)))
 int add_uevent_var(struct kobj_uevent_env *env, const char *format, ...)
 { return 0; }
 
@@ -197,4 +235,4 @@ static inline int kobject_action_type(const char *buf, size_t count,
 { return -EINVAL; }
 #endif
 
-#endif 
+#endif /* _KOBJECT_H_ */

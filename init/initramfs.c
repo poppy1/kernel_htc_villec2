@@ -16,12 +16,13 @@ static void __init error(char *x)
 		message = x;
 }
 
+/* link hash */
 
 #define N_ALIGN(len) ((((len) + 1) & ~3) + 2)
 
 static __initdata struct hash {
 	int ino, minor, major;
-	umode_t mode;
+	mode_t mode;
 	struct hash *next;
 	char name[N_ALIGN(PATH_MAX)];
 } *head[32];
@@ -34,7 +35,7 @@ static inline int hash(int major, int minor, int ino)
 }
 
 static char __init *find_link(int major, int minor, int ino,
-			      umode_t mode, char *name)
+			      mode_t mode, char *name)
 {
 	struct hash **p, *q;
 	for (p = head + hash(major, minor, ino); *p; p = &(*p)->next) {
@@ -116,9 +117,10 @@ static void __init dir_utime(void)
 
 static __initdata time_t mtime;
 
+/* cpio header parsing */
 
 static __initdata unsigned long ino, major, minor, nlink;
-static __initdata umode_t mode;
+static __initdata mode_t mode;
 static __initdata unsigned long body_len, name_len;
 static __initdata uid_t uid;
 static __initdata gid_t gid;
@@ -148,6 +150,7 @@ static void __init parse_header(char *s)
 	name_len = parsed[11];
 }
 
+/* FSM */
 
 static __initdata enum state {
 	Start,
@@ -273,7 +276,7 @@ static int __init maybe_link(void)
 	return 0;
 }
 
-static void __init clean_path(char *path, umode_t mode)
+static void __init clean_path(char *path, mode_t mode)
 {
 	struct stat st;
 
@@ -404,7 +407,7 @@ static int __init flush_buffer(void *bufv, unsigned len)
 	return origLen;
 }
 
-static unsigned my_inptr;   
+static unsigned my_inptr;   /* index of next byte to be processed in inbuf */
 
 #include <linux/decompress/generic.h>
 
@@ -495,7 +498,15 @@ static void __init free_initrd(void)
 		goto skip;
 
 #ifdef CONFIG_KEXEC
+	/*
+	 * If the initrd region is overlapped with crashkernel reserved region,
+	 * free only memory that is not part of crashkernel region.
+	 */
 	if (initrd_start < crashk_end && initrd_end > crashk_start) {
+		/*
+		 * Initialize initrd memory region since the kexec boot does
+		 * not do.
+		 */
 		memset((void *)initrd_start, 0, initrd_end - initrd_start);
 		if (initrd_start < crashk_start)
 			free_initrd_mem(initrd_start, crashk_start);
@@ -562,7 +573,7 @@ static int __init populate_rootfs(void)
 {
 	char *err = unpack_to_rootfs(__initramfs_start, __initramfs_size);
 	if (err)
-		panic(err);	
+		panic(err);	/* Failed to decompress INTERNAL initramfs */
 	if (initrd_start) {
 #ifdef CONFIG_BLK_DEV_RAM
 		int fd;

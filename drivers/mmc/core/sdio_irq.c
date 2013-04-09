@@ -16,7 +16,6 @@
 #include <linux/kernel.h>
 #include <linux/sched.h>
 #include <linux/kthread.h>
-#include <linux/export.h>
 #include <linux/wait.h>
 #include <linux/delay.h>
 
@@ -28,22 +27,25 @@
 
 #include "sdio_ops.h"
 
-static int process_sdio_pending_irqs(struct mmc_host *host)
+static int process_sdio_pending_irqs(struct mmc_card *card)
 {
-	struct mmc_card *card = host->card;
 	int i, ret, count;
 	unsigned char pending;
 	struct sdio_func *func;
 
+	/*
+	 * Optimization, if there is only 1 function interrupt registered
+	 * call irq handler directly
+	 */
 	func = card->sdio_single_irq;
-	if (func && host->sdio_irq_pending) {
+	if (func) {
 		func->irq_handler(func);
 		return 1;
 	}
 
 	ret = mmc_io_rw_direct(card, 0, 0, SDIO_CCCR_INTx, 0, &pending);
 	if (ret) {
-		pr_debug("%s: error %d reading SDIO_CCCR_INTx\n",
+		printk(KERN_DEBUG "%s: error %d reading SDIO_CCCR_INTx\n",
 		       mmc_card_id(card), ret);
 		return ret;
 	}
@@ -53,7 +55,7 @@ static int process_sdio_pending_irqs(struct mmc_host *host)
 		if (pending & (1 << i)) {
 			func = card->sdio_func[i - 1];
 			if (!func) {
-				pr_warning("%s: pending IRQ for "
+				printk(KERN_WARNING "%s: pending IRQ for "
 					"non-existent function\n",
 					mmc_card_id(card));
 				ret = -EINVAL;
@@ -61,7 +63,7 @@ static int process_sdio_pending_irqs(struct mmc_host *host)
 				func->irq_handler(func);
 				count++;
 			} else {
-				pr_warning("%s: pending IRQ with no handler\n",
+				printk(KERN_WARNING "%s: pending IRQ with no handler\n",
 				       sdio_func_id(func));
 				ret = -EINVAL;
 			}
@@ -83,6 +85,12 @@ static int sdio_irq_thread(void *_host)
 
 	sched_setscheduler(current, SCHED_FIFO, &param);
 
+	/*
+	 * We want to allow for SDIO cards to work even on non SDIO
+	 * aware hosts.  One thing that non SDIO host cannot do is
+	 * asynchronous notification of pending SDIO card interrupts
+	 * hence we poll for them in that case.
+	 */
 	idle_period = msecs_to_jiffies(10);
 	period = (host->caps & MMC_CAP_SDIO_IRQ) ?
 		MAX_SCHEDULE_TIMEOUT : idle_period;
@@ -91,13 +99,29 @@ static int sdio_irq_thread(void *_host)
 		 mmc_hostname(host), period);
 
 	do {
+		/*
+		 * We claim the host here on drivers behalf for a couple
+		 * reasons:
+		 *
+		 * 1) it is already needed to retrieve the CCCR_INTx;
+		 * 2) we want the driver(s) to clear the IRQ condition ASAP;
+		 * 3) we need to control the abort condition locally.
+		 *
+		 * Just like traditional hard IRQ handlers, we expect SDIO
+		 * IRQ handlers to be quick and to the point, so that the
+		 * holding of the host lock does not cover too much work
+		 * that doesn't require that lock to be held.
+		 */
 		ret = __mmc_claim_host(host, &host->sdio_irq_thread_abort);
 		if (ret)
 			break;
-		ret = process_sdio_pending_irqs(host);
-		host->sdio_irq_pending = false;
+		ret = process_sdio_pending_irqs(host->card);
 		mmc_release_host(host);
 
+		/*
+		 * Give other threads a chance to run in the presence of
+		 * errors.
+		 */
 		if (ret < 0) {
 			set_current_state(TASK_INTERRUPTIBLE);
 			if (!kthread_should_stop())
@@ -105,6 +129,11 @@ static int sdio_irq_thread(void *_host)
 			set_current_state(TASK_RUNNING);
 		}
 
+		/*
+		 * Adaptive polling frequency based on the assumption
+		 * that an interrupt will be closely followed by more.
+		 * This has a substantial benefit for network devices.
+		 */
 		if (!(host->caps & MMC_CAP_SDIO_IRQ)) {
 			if (ret > 0)
 				period /= 2;
@@ -174,6 +203,7 @@ static int sdio_card_irq_put(struct mmc_card *card)
 	return 0;
 }
 
+/* If there is only 1 function registered set sdio_single_irq */
 static void sdio_single_irq_set(struct mmc_card *card)
 {
 	struct sdio_func *func;
@@ -181,16 +211,26 @@ static void sdio_single_irq_set(struct mmc_card *card)
 
 	card->sdio_single_irq = NULL;
 	if ((card->host->caps & MMC_CAP_SDIO_IRQ) &&
-			card->host->sdio_irqs == 1)
+	    card->host->sdio_irqs == 1)
 		for (i = 0; i < card->sdio_funcs; i++) {
-			func = card->sdio_func[i];
-			if (func && func->irq_handler) {
-				card->sdio_single_irq = func;
-				break;
-			}
-		}
+		       func = card->sdio_func[i];
+		       if (func && func->irq_handler) {
+			       card->sdio_single_irq = func;
+			       break;
+		       }
+	       }
 }
 
+/**
+ *	sdio_claim_irq - claim the IRQ for a SDIO function
+ *	@func: SDIO function
+ *	@handler: IRQ handler callback
+ *
+ *	Claim and activate the IRQ for the given SDIO function. The provided
+ *	handler will be called when that IRQ is asserted.  The host is always
+ *	claimed already when the handler is called so the handler must not
+ *	call sdio_claim_host() nor sdio_release_host().
+ */
 int sdio_claim_irq(struct sdio_func *func, sdio_irq_handler_t *handler)
 {
 	int ret;
@@ -212,7 +252,7 @@ int sdio_claim_irq(struct sdio_func *func, sdio_irq_handler_t *handler)
 
 	reg |= 1 << func->num;
 
-	reg |= 1; 
+	reg |= 1; /* Master interrupt enable */
 
 	ret = mmc_io_rw_direct(func->card, 1, 0, SDIO_CCCR_IENx, reg, NULL);
 	if (ret)
@@ -228,6 +268,12 @@ int sdio_claim_irq(struct sdio_func *func, sdio_irq_handler_t *handler)
 }
 EXPORT_SYMBOL_GPL(sdio_claim_irq);
 
+/**
+ *	sdio_release_irq - release the IRQ for a SDIO function
+ *	@func: SDIO function
+ *
+ *	Disable and release the IRQ for the given SDIO function.
+ */
 int sdio_release_irq(struct sdio_func *func)
 {
 	int ret;
@@ -250,7 +296,7 @@ int sdio_release_irq(struct sdio_func *func)
 
 	reg &= ~(1 << func->num);
 
-	
+	/* Disable master interrupt with the last function interrupt */
 	if (!(reg & 0xFE))
 		reg = 0;
 

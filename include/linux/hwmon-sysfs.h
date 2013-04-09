@@ -20,8 +20,6 @@
 #ifndef _LINUX_HWMON_SYSFS_H
 #define _LINUX_HWMON_SYSFS_H
 
-#include <linux/device.h>
-
 struct sensor_device_attribute{
 	struct device_attribute dev_attr;
 	int index;
@@ -54,4 +52,4 @@ struct sensor_device_attribute_2 {
 struct sensor_device_attribute_2 sensor_dev_attr_##_name		\
 	= SENSOR_ATTR_2(_name, _mode, _show, _store, _nr, _index)
 
-#endif 
+#endif /* _LINUX_HWMON_SYSFS_H */

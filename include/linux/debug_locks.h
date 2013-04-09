@@ -2,8 +2,8 @@
 #define __LINUX_DEBUG_LOCKING_H
 
 #include <linux/kernel.h>
-#include <linux/atomic.h>
-#include <linux/bug.h>
+#include <asm/atomic.h>
+#include <asm/system.h>
 
 struct task_struct;
 
@@ -16,6 +16,9 @@ static inline int __debug_locks_off(void)
 	return xchg(&debug_locks, 0);
 }
 
+/*
+ * Generic 'turn off all lock debugging' function:
+ */
 extern int debug_locks_off(void);
 
 #define DEBUG_LOCKS_WARN_ON(c)						\

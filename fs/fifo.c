@@ -1,10 +1,20 @@
+/*
+ *  linux/fs/fifo.c
+ *
+ *  written by Paul H. Hargrove
+ *
+ *  Fixes:
+ *	10-06-1999, AV: fixed OOM handling in fifo_open(), moved
+ *			initialization there, switched to external
+ *			allocation of pipe_inode_info.
+ */
 
 #include <linux/mm.h>
 #include <linux/fs.h>
 #include <linux/sched.h>
 #include <linux/pipe_fs_i.h>
 
-static int wait_for_partner(struct inode* inode, unsigned int *cnt)
+static void wait_for_partner(struct inode* inode, unsigned int *cnt)
 {
 	int cur = *cnt;	
 
@@ -13,7 +23,6 @@ static int wait_for_partner(struct inode* inode, unsigned int *cnt)
 		if (signal_pending(current))
 			break;
 	}
-	return cur == *cnt ? -ERESTARTSYS : 0;
 }
 
 static void wake_up_partner(struct inode* inode)
@@ -37,11 +46,16 @@ static int fifo_open(struct inode *inode, struct file *filp)
 	}
 	filp->f_version = 0;
 
-	
+	/* We can only do regular read/write on fifos */
 	filp->f_mode &= (FMODE_READ | FMODE_WRITE);
 
 	switch (filp->f_mode) {
 	case FMODE_READ:
+	/*
+	 *  O_RDONLY
+	 *  POSIX.1 says that O_NONBLOCK means return with the FIFO
+	 *  opened, even when there is no process writing the FIFO.
+	 */
 		filp->f_op = &read_pipefifo_fops;
 		pipe->r_counter++;
 		if (pipe->readers++ == 0)
@@ -49,15 +63,23 @@ static int fifo_open(struct inode *inode, struct file *filp)
 
 		if (!pipe->writers) {
 			if ((filp->f_flags & O_NONBLOCK)) {
+				/* suppress POLLHUP until we have
+				 * seen a writer */
 				filp->f_version = pipe->w_counter;
 			} else {
-				if (wait_for_partner(inode, &pipe->w_counter))
+				wait_for_partner(inode, &pipe->w_counter);
+				if(signal_pending(current))
 					goto err_rd;
 			}
 		}
 		break;
 	
 	case FMODE_WRITE:
+	/*
+	 *  O_WRONLY
+	 *  POSIX.1 says that O_NONBLOCK means return -1 with
+	 *  errno=ENXIO when there is no process reading the FIFO.
+	 */
 		ret = -ENXIO;
 		if ((filp->f_flags & O_NONBLOCK) && !pipe->readers)
 			goto err;
@@ -68,12 +90,19 @@ static int fifo_open(struct inode *inode, struct file *filp)
 			wake_up_partner(inode);
 
 		if (!pipe->readers) {
-			if (wait_for_partner(inode, &pipe->r_counter))
+			wait_for_partner(inode, &pipe->r_counter);
+			if (signal_pending(current))
 				goto err_wr;
 		}
 		break;
 	
 	case FMODE_READ | FMODE_WRITE:
+	/*
+	 *  O_RDWR
+	 *  POSIX.1 leaves this case "undefined" when O_NONBLOCK is set.
+	 *  This implementation will NEVER block on a O_RDWR open, since
+	 *  the process can at least talk to itself.
+	 */
 		filp->f_op = &rdwr_pipefifo_fops;
 
 		pipe->readers++;
@@ -89,7 +118,7 @@ static int fifo_open(struct inode *inode, struct file *filp)
 		goto err;
 	}
 
-	
+	/* Ok! */
 	mutex_unlock(&inode->i_mutex);
 	return 0;
 
@@ -114,7 +143,12 @@ err_nocleanup:
 	return ret;
 }
 
+/*
+ * Dummy default file-operations: the only thing this does
+ * is contain the open that then fills in the correct operations
+ * depending on the access mode of the file...
+ */
 const struct file_operations def_fifo_fops = {
-	.open		= fifo_open,	
+	.open		= fifo_open,	/* will set read_ or write_pipefifo_fops */
 	.llseek		= noop_llseek,
 };

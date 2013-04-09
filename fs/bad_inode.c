@@ -9,7 +9,7 @@
  */
 
 #include <linux/fs.h>
-#include <linux/export.h>
+#include <linux/module.h>
 #include <linux/stat.h>
 #include <linux/time.h>
 #include <linux/namei.h>
@@ -87,8 +87,7 @@ static int bad_file_release(struct inode *inode, struct file *filp)
 	return -EIO;
 }
 
-static int bad_file_fsync(struct file *file, loff_t start, loff_t end,
-			  int datasync)
+static int bad_file_fsync(struct file *file, int datasync)
 {
 	return -EIO;
 }
@@ -173,7 +172,7 @@ static const struct file_operations bad_file_ops =
 };
 
 static int bad_inode_create (struct inode *dir, struct dentry *dentry,
-		umode_t mode, struct nameidata *nd)
+		int mode, struct nameidata *nd)
 {
 	return -EIO;
 }
@@ -202,7 +201,7 @@ static int bad_inode_symlink (struct inode *dir, struct dentry *dentry,
 }
 
 static int bad_inode_mkdir(struct inode *dir, struct dentry *dentry,
-			umode_t mode)
+			int mode)
 {
 	return -EIO;
 }
@@ -213,7 +212,7 @@ static int bad_inode_rmdir (struct inode *dir, struct dentry *dentry)
 }
 
 static int bad_inode_mknod (struct inode *dir, struct dentry *dentry,
-			umode_t mode, dev_t rdev)
+			int mode, dev_t rdev)
 {
 	return -EIO;
 }
@@ -230,7 +229,7 @@ static int bad_inode_readlink(struct dentry *dentry, char __user *buffer,
 	return -EIO;
 }
 
-static int bad_inode_permission(struct inode *inode, int mask)
+static int bad_inode_permission(struct inode *inode, int mask, unsigned int flags)
 {
 	return -EIO;
 }
@@ -281,8 +280,10 @@ static const struct inode_operations bad_inode_ops =
 	.mknod		= bad_inode_mknod,
 	.rename		= bad_inode_rename,
 	.readlink	= bad_inode_readlink,
-	
-	
+	/* follow_link must be no-op, otherwise unmounting this inode
+	   won't work */
+	/* put_link returns void */
+	/* truncate returns void */
 	.permission	= bad_inode_permission,
 	.getattr	= bad_inode_getattr,
 	.setattr	= bad_inode_setattr,
@@ -290,11 +291,27 @@ static const struct inode_operations bad_inode_ops =
 	.getxattr	= bad_inode_getxattr,
 	.listxattr	= bad_inode_listxattr,
 	.removexattr	= bad_inode_removexattr,
-	
+	/* truncate_range returns void */
 };
 
 
+/*
+ * When a filesystem is unable to read an inode due to an I/O error in
+ * its read_inode() function, it can call make_bad_inode() to return a
+ * set of stubs which will return EIO errors as required. 
+ *
+ * We only need to do limited initialisation: all other fields are
+ * preinitialised to zero automatically.
+ */
  
+/**
+ *	make_bad_inode - mark an inode bad due to an I/O error
+ *	@inode: Inode to mark bad
+ *
+ *	When an inode cannot be read due to a media or remote network
+ *	failure this function makes the inode "bad" and causes I/O operations
+ *	on it to fail from this point on.
+ */
  
 void make_bad_inode(struct inode *inode)
 {
@@ -308,7 +325,18 @@ void make_bad_inode(struct inode *inode)
 }
 EXPORT_SYMBOL(make_bad_inode);
 
+/*
+ * This tests whether an inode has been flagged as bad. The test uses
+ * &bad_inode_ops to cover the case of invalidated inodes as well as
+ * those created by make_bad_inode() above.
+ */
  
+/**
+ *	is_bad_inode - is an inode errored
+ *	@inode: inode to test
+ *
+ *	Returns true if the inode in question has been marked as bad.
+ */
  
 int is_bad_inode(struct inode *inode)
 {
@@ -317,6 +345,12 @@ int is_bad_inode(struct inode *inode)
 
 EXPORT_SYMBOL(is_bad_inode);
 
+/**
+ * iget_failed - Mark an under-construction inode as dead and release it
+ * @inode: The inode to discard
+ *
+ * Mark an under-construction inode as dead and release it.
+ */
 void iget_failed(struct inode *inode)
 {
 	make_bad_inode(inode);

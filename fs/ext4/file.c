@@ -29,13 +29,18 @@
 #include "xattr.h"
 #include "acl.h"
 
+/*
+ * Called when an inode is released. Note that this is different
+ * from ext4_file_open: open gets called at every open, but release
+ * gets called only when /all/ the files are closed.
+ */
 static int ext4_release_file(struct inode *inode, struct file *filp)
 {
 	if (ext4_test_inode_state(inode, EXT4_STATE_DA_ALLOC_CLOSE)) {
 		ext4_alloc_da_blocks(inode);
 		ext4_clear_inode_state(inode, EXT4_STATE_DA_ALLOC_CLOSE);
 	}
-	
+	/* if we are the last writer on the inode, drop the block reservation */
 	if ((filp->f_mode & FMODE_WRITE) &&
 			(atomic_read(&inode->i_writecount) == 1) &&
 		        !EXT4_I(inode)->i_reserved_data_blocks)
@@ -57,6 +62,15 @@ static void ext4_aiodio_wait(struct inode *inode)
 	wait_event(*wq, (atomic_read(&EXT4_I(inode)->i_aiodio_unwritten) == 0));
 }
 
+/*
+ * This tests whether the IO in question is block-aligned or not.
+ * Ext4 utilizes unwritten extents when hole-filling during direct IO, and they
+ * are converted to written only after the IO is complete.  Until they are
+ * mapped, these blocks appear as holes, so dio_zero_block() will assume that
+ * it needs to zero out portions of the start and/or end block.  If 2 AIO
+ * threads are at work on the same unwritten block, they must be synchronized
+ * or one thread will zero the other's data, causing corruption.
+ */
 static int
 ext4_unaligned_aio(struct inode *inode, const struct iovec *iov,
 		   unsigned long nr_segs, loff_t pos)
@@ -83,6 +97,10 @@ ext4_file_write(struct kiocb *iocb, const struct iovec *iov,
 	int unaligned_aio = 0;
 	int ret;
 
+	/*
+	 * If we have encountered a bitmap-format file, the size limit
+	 * is smaller than s_maxbytes, which is for extent-mapped files.
+	 */
 
 	if (!(ext4_test_inode_flag(inode, EXT4_INODE_EXTENTS))) {
 		struct ext4_sb_info *sbi = EXT4_SB(inode->i_sb);
@@ -101,11 +119,11 @@ ext4_file_write(struct kiocb *iocb, const struct iovec *iov,
 		unaligned_aio = ext4_unaligned_aio(inode, iov, nr_segs, pos);
 	}
 
-	
+	/* Unaligned direct AIO must be serialized; see comment above */
 	if (unaligned_aio) {
 		static unsigned long unaligned_warn_time;
 
-		
+		/* Warn about this once per day */
 		if (printk_timed_ratelimit(&unaligned_warn_time, 60*60*24*HZ))
 			ext4_msg(inode->i_sb, KERN_WARNING,
 				 "Unaligned AIO/DIO on inode %ld by %s; "
@@ -152,16 +170,26 @@ static int ext4_file_open(struct inode * inode, struct file * filp)
 	if (unlikely(!(sbi->s_mount_flags & EXT4_MF_MNTDIR_SAMPLED) &&
 		     !(sb->s_flags & MS_RDONLY))) {
 		sbi->s_mount_flags |= EXT4_MF_MNTDIR_SAMPLED;
+		/*
+		 * Sample where the filesystem has been mounted and
+		 * store it in the superblock for sysadmin convenience
+		 * when trying to sort through large numbers of block
+		 * devices or filesystem images.
+		 */
 		memset(buf, 0, sizeof(buf));
 		path.mnt = mnt;
 		path.dentry = mnt->mnt_root;
 		cp = d_path(&path, buf, sizeof(buf));
 		if (!IS_ERR(cp)) {
-			strlcpy(sbi->s_es->s_last_mounted, cp,
-				sizeof(sbi->s_es->s_last_mounted));
+			memcpy(sbi->s_es->s_last_mounted, cp,
+			       sizeof(sbi->s_es->s_last_mounted));
 			ext4_mark_super_dirty(sb);
 		}
 	}
+	/*
+	 * Set up the jbd2_inode if we are opening the inode for
+	 * writing and the journal is present
+	 */
 	if (sbi->s_journal && !ei->jinode && (filp->f_mode & FMODE_WRITE)) {
 		struct jbd2_inode *jinode = jbd2_alloc_inode(GFP_KERNEL);
 
@@ -182,6 +210,11 @@ static int ext4_file_open(struct inode * inode, struct file * filp)
 	return dquot_file_open(inode, filp);
 }
 
+/*
+ * ext4_llseek() copied from generic_file_llseek() to handle both
+ * block-mapped and extent-mapped maxbytes values. This should
+ * otherwise be identical with generic_file_llseek().
+ */
 loff_t ext4_llseek(struct file *file, loff_t offset, int origin)
 {
 	struct inode *inode = file->f_mapping->host;
@@ -191,8 +224,32 @@ loff_t ext4_llseek(struct file *file, loff_t offset, int origin)
 		maxbytes = EXT4_SB(inode->i_sb)->s_bitmap_maxbytes;
 	else
 		maxbytes = inode->i_sb->s_maxbytes;
+	mutex_lock(&inode->i_mutex);
+	switch (origin) {
+	case SEEK_END:
+		offset += inode->i_size;
+		break;
+	case SEEK_CUR:
+		if (offset == 0) {
+			mutex_unlock(&inode->i_mutex);
+			return file->f_pos;
+		}
+		offset += file->f_pos;
+		break;
+	}
 
-	return generic_file_llseek_size(file, offset, origin, maxbytes);
+	if (offset < 0 || offset > maxbytes) {
+		mutex_unlock(&inode->i_mutex);
+		return -EINVAL;
+	}
+
+	if (offset != file->f_pos) {
+		file->f_pos = offset;
+		file->f_version = 0;
+	}
+	mutex_unlock(&inode->i_mutex);
+
+	return offset;
 }
 
 const struct file_operations ext4_file_operations = {
@@ -223,7 +280,7 @@ const struct inode_operations ext4_file_inode_operations = {
 	.listxattr	= ext4_listxattr,
 	.removexattr	= generic_removexattr,
 #endif
-	.get_acl	= ext4_get_acl,
+	.check_acl	= ext4_check_acl,
 	.fiemap		= ext4_fiemap,
 };
 

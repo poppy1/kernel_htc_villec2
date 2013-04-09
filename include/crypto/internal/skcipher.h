@@ -34,8 +34,6 @@ static inline void crypto_set_skcipher_spawn(
 int crypto_grab_skcipher(struct crypto_skcipher_spawn *spawn, const char *name,
 			 u32 type, u32 mask);
 
-struct crypto_alg *crypto_lookup_skcipher(const char *name, u32 type, u32 mask);
-
 static inline void crypto_drop_skcipher(struct crypto_skcipher_spawn *spawn)
 {
 	crypto_drop_spawn(&spawn->base);
@@ -108,5 +106,5 @@ static inline u32 ablkcipher_request_flags(struct ablkcipher_request *req)
 	return req->base.flags;
 }
 
-#endif	
+#endif	/* _CRYPTO_INTERNAL_SKCIPHER_H */
 

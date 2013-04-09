@@ -14,7 +14,6 @@
 
 #include <linux/err.h>
 #include <linux/kernel.h>
-#include <linux/module.h>
 #include <linux/init.h>
 #include <linux/delay.h>
 #include <linux/slab.h>
@@ -34,7 +33,10 @@
 
 #define FTSMPS_BAND1_UV_MIN		350000
 #define FTSMPS_BAND1_UV_MAX		650000
+/* 3 LSB's of program voltage must be 0 in band 1. */
+/* Logical step size */
 #define FTSMPS_BAND1_UV_LOG_STEP	50000
+/* Physical step size */
 #define FTSMPS_BAND1_UV_PHYS_STEP	6250
 
 #define FTSMPS_BAND2_UV_MIN		700000
@@ -53,8 +55,10 @@ struct saw_vreg {
 	int				uV;
 };
 
+/* Minimum core operating voltage */
 #define MIN_CORE_VOLTAGE		950000
 
+/* Specifies the PMIC internal slew rate in uV/us. */
 #define REGULATOR_SLEW_RATE		1250
 
 static int saw_get_voltage(struct regulator_dev *rdev)
@@ -82,7 +86,7 @@ static int saw_set_voltage(struct regulator_dev *rdev, int min_uV, int max_uV,
 		return -EINVAL;
 	}
 
-	
+	/* Round up for set points in the gaps between bands. */
 	if (uV > FTSMPS_BAND1_UV_MAX && uV < FTSMPS_BAND2_UV_MIN)
 		uV = FTSMPS_BAND2_UV_MIN;
 	else if (uV > FTSMPS_BAND2_UV_MAX
@@ -117,7 +121,7 @@ static int saw_set_voltage(struct regulator_dev *rdev, int min_uV, int max_uV,
 	rc = msm_spm_set_vdd(rdev_get_id(rdev), band | vprog);
 	if (!rc) {
 		if (uV > vreg->uV) {
-			
+			/* Wait for voltage to stabalize. */
 			udelay((uV - vreg->uV) / REGULATOR_SLEW_RATE);
 		}
 		vreg->uV = uV;
@@ -170,8 +174,8 @@ static int __devinit saw_probe(struct platform_device *pdev)
 	vreg->desc.owner = THIS_MODULE;
 	vreg->uV	 = MIN_CORE_VOLTAGE;
 
-	vreg->rdev = regulator_register(&vreg->desc, &pdev->dev,
-							init_data, vreg, NULL);
+	vreg->rdev = regulator_register(&vreg->desc, &pdev->dev, init_data,
+					vreg);
 	if (IS_ERR(vreg->rdev)) {
 		rc = PTR_ERR(vreg->rdev);
 		pr_err("regulator_register failed, rc=%d.\n", rc);
